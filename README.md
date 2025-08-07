@@ -22,7 +22,7 @@
 
 1.  进入 AstrBot 主目录。
 2.  打开 `data/plugins` 文件夹。
-3.  执行 `git clone https://github.com/zgojin/astrabot_plugin_retry.git`。
+3.  执行 `git clone https://github.com/muyouzhi6/astrabot_plugin_retry.git`。
 4.  重启 AstrBot 或在 WebUI 中重载插件。
 
 ## ⚙️ 配置
