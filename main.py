@@ -64,7 +64,7 @@ class IntelligentRetry(Star):
                     event.unified_msg_origin, curr_cid
                 )
                 if conv and conv.history:
-                    context_history = json.loads(conv.history)
+                    context_history = await asyncio.to_thread(json.loads, conv.history)
 
             logger.debug(f"正在使用 prompt: '{event.message_str}' 进行重试...")
             llm_response = await provider.text_chat(
