@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-一个为 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 设计的增强型插件，旨在解决与大语言模型（LLM）交互时不稳定的问题。当LLM返回空内容或已知的错误信息时，本插件会自动进行多次重试，以获取有效的回复，从而显著提升用户体验和机器人服务的可靠性。
+一个为 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 设计的增强型插件，旨在解决与大语言模型（LLM）交互时不稳定的问题（主要是gemini最近老空返回）。当LLM返回空内容或已知的错误信息时，本插件会自动进行多次重试，以获取有效的回复，从而显著提升用户体验和机器人服务的可靠性。
 
 ## ✨ 功能特性
 
