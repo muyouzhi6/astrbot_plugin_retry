@@ -11,4 +11,4 @@ version: 1.0.0
 author: 木有知 & 长安某
 
 # 插件的 Git 仓库地址
-repo: https://github.com/zgojin/astrabot_plugin_retry # 请确保这是你最终的仓库地址
+repo: https://github.com/muyouzhi6/astrabot_plugin_retry # 请确保这是你最终的仓库地址
