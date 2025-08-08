@@ -4,6 +4,7 @@ import asyncio
 import json
 
 import astrbot.api.message_components as Comp
+# 确保所有需要的模块都被正确导入
 from astrbot.api import logger, AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
@@ -42,6 +43,7 @@ class IntelligentRetry(Star):
         if not self.error_keywords:
             logger.warning("[IntelligentRetry] 未配置任何错误关键词。")
 
+    # --- 这是我们刚才修改的函数，现在它位于正确的位置（类定义内部）---
     async def _perform_retry(self, event: AstrMessageEvent):
         """执行单次重试的核心逻辑"""
         provider = self.context.get_using_provider()
@@ -65,12 +67,18 @@ class IntelligentRetry(Star):
                 )
                 if conv and conv.history:
                     context_history = await asyncio.to_thread(json.loads, conv.history)
+            
+            # 【重要】从 provider 对象中获取其配置的 system_prompt
+            system_prompt = provider.system_prompt if hasattr(provider, "system_prompt") else None
+            if not system_prompt and hasattr(provider, "config"):
+                 system_prompt = provider.config.get("system_prompt")
 
             logger.debug(f"正在使用 prompt: '{event.message_str}' 进行重试...")
             llm_response = await provider.text_chat(
                 prompt=event.message_str,
                 contexts=context_history,
                 image_urls=image_urls,
+                system_prompt=system_prompt,  # <-- 关键！在这里把人设加回去
             )
             return llm_response
         except Exception as e:
