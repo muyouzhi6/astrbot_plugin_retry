@@ -1,4 +1,4 @@
-# AstrBot 智能重试插件 (Intelligent Retry)
+# AstrBot 错误/空值重试插件 (Intelligent Retry)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
