@@ -25,7 +25,7 @@ class IntelligentRetry(Star):
         super().__init__(context)
         self.max_attempts = config.get('max_attempts', 3)
         self.retry_delay = config.get('retry_delay', 2)
-        default_keywords = "api 返回的内容为空\n请求失败\n错误类型\n调用失败\n处理失败"
+        default_keywords = "api 返回的内容为空\n请求失败\nAPI 返回的 completion 由于内容安全过滤被拒绝(非 AstrBot)\n调用失败\n处理失败"
         keywords_str = config.get('error_keywords', default_keywords)
         self.error_keywords = [k.strip().lower() for k in keywords_str.split('\n') if k.strip()]
         
