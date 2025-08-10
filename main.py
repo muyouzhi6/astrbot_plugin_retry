@@ -76,11 +76,21 @@ class IntelligentRetry(Star):
             logger.error(f"重试调用LLM时发生错误: {e}", exc_info=True)
             return None
 
-    async def _retry_task(self, prompt: str, unified_msg_origin: str, image_urls: list, func_tool: any):
+    async def _retry_task(self, prompt: str, session_info: str, image_urls: list, func_tool: any):
         """独立的后台任务，接收具体的数据，与 event 对象生命周期解耦"""
+        # 从 session_info 解析所需信息
+        parts = str(session_info).split(":")
+        if len(parts) != 3:
+            logger.error(f"[Retry] 无效的 session 格式: {session_info}")
+            return
+            
+        # 重新构建标准格式
+        platform, msg_type, raw_id = parts
+        session_str = f"{platform}:{msg_type}:{raw_id}"
+        
         for attempt in range(1, self.max_attempts + 1):
-            logger.info(f"[Retry] 后台重试任务: 第 {attempt}/{self.max_attempts} 次尝试... session: {unified_msg_origin}")
-            new_response = await self._perform_retry(prompt, unified_msg_origin, image_urls, func_tool)
+            logger.info(f"[Retry] 后台重试任务: 第 {attempt}/{self.max_attempts} 次尝试... session: {session_str}")
+            new_response = await self._perform_retry(prompt, session_str, image_urls, func_tool)
 
             new_text = ""
             if new_response and hasattr(new_response, 'completion_text'):
@@ -98,29 +108,29 @@ class IntelligentRetry(Star):
                 is_new_reply_ok = False
 
             if is_new_reply_ok:
-                logger.info(f"[Retry] 后台重试成功，正在直接发送新回复到会话: {unified_msg_origin}，内容: {new_text[:100]}...")
+                logger.info(f"[Retry] 后台重试成功，正在直接发送新回复到会话: {session_str}，内容: {new_text[:100]}...")
                 try:
                     if not new_text.strip():
-                        logger.error(f"[Retry] 生成回复内容为空，放弃发送。session: {unified_msg_origin}")
+                        logger.error(f"[Retry] 生成回复内容为空，放弃发送。session: {session_str}")
                         return
-                    await self.context.send_message(new_text, unified_msg_origin)
-                    logger.info(f"[Retry] 新回复已成功发送。session: {unified_msg_origin}")
+                    await self.context.send_message(new_text, session_str)
+                    logger.info(f"[Retry] 新回复已成功发送。session: {session_str}")
                     return
                 except Exception as e:
-                    logger.error(f"[Retry] 后台重试成功，但发送消息时发生错误: {e}，session: {unified_msg_origin}，内容: {new_text}", exc_info=True)
+                    logger.error(f"[Retry] 后台重试成功，但发送消息时发生错误: {e}，session: {session_str}，内容: {new_text}", exc_info=True)
                     return
 
             if attempt < self.max_attempts:
-                logger.warning(f"[Retry] 后台重试尝试失败，将在 {self.retry_delay} 秒后进行下一次尝试... session: {unified_msg_origin}")
+                logger.warning(f"[Retry] 后台重试尝试失败，将在 {self.retry_delay} 秒后进行下一次尝试... session: {session_str}")
                 await asyncio.sleep(self.retry_delay)
 
-        logger.error(f"[Retry] 所有 {self.max_attempts} 次后台重试均失败，放弃该次回复。session: {unified_msg_origin}")
+        logger.error(f"[Retry] 所有 {self.max_attempts} 次后台重试均失败，放弃该次回复。session: {session_str}")
         # 可选：重试全部失败后，主动通知用户
         try:
-            await self.context.send_message("很抱歉，AI 回复失败，请稍后再试。", unified_msg_origin)
-            logger.info(f"[Retry] 已通知用户回复失败。session: {unified_msg_origin}")
+            await self.context.send_message("很抱歉，AI 回复失败，请稍后再试。", session_str)
+            logger.info(f"[Retry] 已通知用户回复失败。session: {session_str}")
         except Exception as e:
-            logger.error(f"[Retry] 通知用户失败时发生异常: {e}，session: {unified_msg_origin}", exc_info=True)
+            logger.error(f"[Retry] 通知用户失败时发生异常: {e}，session: {session_str}", exc_info=True)
 
     @filter.on_decorating_result(priority=-100)
     async def check_and_retry(self, event: AstrMessageEvent):
