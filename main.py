@@ -70,38 +70,48 @@ class IntelligentRetry(Star):
     async def _retry_task(self, prompt: str, unified_msg_origin: str, image_urls: list, func_tool: any):
         """独立的后台任务，接收具体的数据，与 event 对象生命周期解耦"""
         for attempt in range(1, self.max_attempts + 1):
-            logger.info(f"后台重试任务: 第 {attempt}/{self.max_attempts} 次尝试...")
+            logger.info(f"[Retry] 后台重试任务: 第 {attempt}/{self.max_attempts} 次尝试... session: {unified_msg_origin}")
             new_response = await self._perform_retry(prompt, unified_msg_origin, image_urls, func_tool)
 
             new_text = ""
             if new_response and hasattr(new_response, 'completion_text'):
                 new_text = new_response.completion_text.strip()
-            
+
             is_new_reply_ok = False
             if new_text and not any(keyword in new_text.lower() for keyword in self.error_keywords):
-                 is_new_reply_ok = True
-            
+                is_new_reply_ok = True
+
             finish_reason = 'stop'
             if new_response and hasattr(new_response, 'raw') and hasattr(new_response.raw, 'choices') and new_response.raw.choices:
-                 finish_reason = getattr(new_response.raw.choices[0], 'finish_reason', 'stop')
+                finish_reason = getattr(new_response.raw.choices[0], 'finish_reason', 'stop')
 
             if not new_text and finish_reason == 'stop':
                 is_new_reply_ok = False
 
             if is_new_reply_ok:
-                logger.info(f"后台重试成功，正在直接发送新回复到会话: {unified_msg_origin}")
+                logger.info(f"[Retry] 后台重试成功，正在直接发送新回复到会话: {unified_msg_origin}，内容: {new_text[:100]}...")
                 try:
+                    if not new_text.strip():
+                        logger.error(f"[Retry] 生成回复内容为空，放弃发送。session: {unified_msg_origin}")
+                        return
                     await self.context.send_message(new_text, unified_msg_origin)
+                    logger.info(f"[Retry] 新回复已成功发送。session: {unified_msg_origin}")
                     return
                 except Exception as e:
-                    logger.error(f"后台重试成功，但发送消息时发生错误: {e}", exc_info=True)
+                    logger.error(f"[Retry] 后台重试成功，但发送消息时发生错误: {e}，session: {unified_msg_origin}，内容: {new_text}", exc_info=True)
                     return
 
             if attempt < self.max_attempts:
-                logger.warning(f"后台重试尝试失败，将在 {self.retry_delay} 秒后进行下一次尝试...")
+                logger.warning(f"[Retry] 后台重试尝试失败，将在 {self.retry_delay} 秒后进行下一次尝试... session: {unified_msg_origin}")
                 await asyncio.sleep(self.retry_delay)
-        
-        logger.error(f"所有 {self.max_attempts} 次后台重试均失败，放弃该次回复。")
+
+        logger.error(f"[Retry] 所有 {self.max_attempts} 次后台重试均失败，放弃该次回复。session: {unified_msg_origin}")
+        # 可选：重试全部失败后，主动通知用户
+        try:
+            await self.context.send_message("很抱歉，AI 回复失败，请稍后再试。", unified_msg_origin)
+            logger.info(f"[Retry] 已通知用户回复失败。session: {unified_msg_origin}")
+        except Exception as e:
+            logger.error(f"[Retry] 通知用户失败时发生异常: {e}，session: {unified_msg_origin}", exc_info=True)
 
     @filter.on_decorating_result(priority=-1)
     async def check_and_retry(self, event: AstrMessageEvent):
@@ -121,7 +131,7 @@ class IntelligentRetry(Star):
                 return # **直接退出，让框架核心继续处理**
 
         # --- 只有在不是 tool_calls 的情况下，才执行下面的错误/空回复检查 ---
-        
+        # 只对最终输出的空/错误回复触发重试
         result = event.get_result()
         is_truly_empty = not result or not result.chain
         if not is_truly_empty:
@@ -129,7 +139,7 @@ class IntelligentRetry(Star):
                 (isinstance(c, Comp.Plain) and c.text.strip()) or not isinstance(c, Comp.Plain)
                 for c in result.chain
             )
-        
+
         should_retry = False
         message_str = result.get_plain_text() if result else ""
 
@@ -137,19 +147,20 @@ class IntelligentRetry(Star):
         if message_str:
             lower_message_str = message_str.lower()
             if any(keyword in lower_message_str for keyword in self.error_keywords):
-                logger.warning(f"检测到错误文本，准备启动后台重试: '{message_str}'")
+                logger.warning(f"检测到最终输出错误文本，准备启动后台重试: '{message_str}'")
                 should_retry = True
-        
+
         # 检查是否是真正的空回复（并且已经排除了tool_calls的情况）
         if not should_retry and is_truly_empty:
-            logger.warning("检测到最终回复为空（非工具调用），准备启动后台重试。")
+            logger.warning("检测到最终输出为空（非工具调用），准备启动后台重试。")
             should_retry = True
-        
+
         if should_retry and event.message_str.strip():
             logger.info("创建后台重试任务，并立即阻止当前错误/空回复的发送。")
-            
+
             prompt_to_retry = event.message_str
-            session_id_to_use = str(event.unified_msg_origin)
+            # 优先使用 event.session_id，如果没有则用 event.unified_msg_origin
+            session_id_to_use = getattr(event, "session_id", None) or getattr(event, "unified_msg_origin", None)
             images_to_retry = [
                 comp.url
                 for comp in event.message_obj.message
@@ -159,15 +170,16 @@ class IntelligentRetry(Star):
             provider = self.context.get_using_provider()
             func_tool_to_retry = None
             if provider and hasattr(provider, "func_tool"):
-                 func_tool_to_retry = provider.func_tool
-            
+                func_tool_to_retry = provider.func_tool
+
+            logger.debug(f"[Retry] 创建后台重试任务，session_id: {session_id_to_use}")
             asyncio.create_task(self._retry_task(
                 prompt_to_retry,
                 session_id_to_use,
                 images_to_retry,
                 func_tool_to_retry 
             ))
-            
+
             event.clear_result()
             event.stop_event()
 
