@@ -159,8 +159,25 @@ class IntelligentRetry(Star):
             logger.info("创建后台重试任务，并立即阻止当前错误/空回复的发送。")
 
             prompt_to_retry = event.message_str
-            # 优先使用 event.session_id，如果没有则用 event.unified_msg_origin
-            session_id_to_use = getattr(event, "session_id", None) or getattr(event, "unified_msg_origin", None)
+            
+            # 获取完整的 session 字符串
+            session_id_to_use = None
+            if hasattr(event, "get_session"):
+                session_id_to_use = event.get_session()
+            elif hasattr(event, "session"):
+                session_id_to_use = event.session
+            elif isinstance(event, AstrMessageEvent):
+                # 如果是 AstrBot 事件，尝试构建完整的 session 字符串
+                platform = getattr(event, "platform", "aiocqhttp")
+                msg_type = "FriendMessage" if hasattr(event, "user_id") else "GroupMessage"
+                session_id = getattr(event, "unified_msg_origin", None) or getattr(event, "session_id", None)
+                if session_id:
+                    session_id_to_use = f"{platform}:{msg_type}:{session_id}"
+
+            if not session_id_to_use:
+                logger.error(f"[Retry] 无法获取合法的 session 字符串，将放弃重试。event: {event}")
+                return
+                
             images_to_retry = [
                 comp.url
                 for comp in event.message_obj.message
