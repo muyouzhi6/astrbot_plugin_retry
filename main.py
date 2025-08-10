@@ -5,7 +5,7 @@ import json
 
 import astrbot.api.message_components as Comp
 from astrbot.api import logger, AstrBotConfig
-from astrbot.api.event import AstrMessageEvent, filter, MessageSession  # MessageSession 应该在这里
+from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
 
 @register(
@@ -35,10 +35,10 @@ class IntelligentRetry(Star):
             f"将在LLM最终回复无效时自动重试 (最多 {self.max_attempts} 次)。"
         )
 
-    async def _perform_retry(self, prompt: str, session: MessageSession, image_urls: list, func_tool: any):
+    async def _perform_retry(self, prompt: str, session_str: str, image_urls: list, func_tool: any):
         """
         根据具体信息，重新构建一个完整的请求并执行。
-        session: MessageSession 对象
+        session_str 格式为 platform:type:id
         """
         provider = self.context.get_using_provider()
         if not provider:
@@ -46,7 +46,13 @@ class IntelligentRetry(Star):
             return None
             
         try:
-            raw_session_id = session.session_id  # 直接使用 session_id
+            # 从完整的 session 字符串中提取原始 ID
+            parts = session_str.split(":")
+            if len(parts) != 3:
+                logger.error(f"[Retry] session 字符串格式错误: {session_str}")
+                return None
+                
+            raw_session_id = parts[2]  # 使用最后一部分作为原始 ID
             
             curr_cid = await self.context.conversation_manager.get_curr_conversation_id(raw_session_id)
             context_history = []
@@ -70,13 +76,17 @@ class IntelligentRetry(Star):
             logger.error(f"重试调用LLM时发生错误: {e}", exc_info=True)
             return None
 
-    async def _retry_task(self, prompt: str, session: MessageSession, image_urls: list, func_tool: any):
+    async def _retry_task(self, prompt: str, session_str: str, image_urls: list, func_tool: any):
         """独立的后台任务，接收具体的数据，与 event 对象生命周期解耦"""
-        session_desc = f"{session.platform_name}:{session.message_type}:{session.session_id}"
+        # 检查 session 字符串格式
+        parts = str(session_str).split(":")
+        if len(parts) != 3:
+            logger.error(f"[Retry] session 字符串格式错误: {session_str}")
+            return
         
         for attempt in range(1, self.max_attempts + 1):
-            logger.info(f"[Retry] 后台重试任务: 第 {attempt}/{self.max_attempts} 次尝试... session: {session_desc}")
-            new_response = await self._perform_retry(prompt, session, image_urls, func_tool)
+            logger.info(f"[Retry] 后台重试任务: 第 {attempt}/{self.max_attempts} 次尝试... session: {session_str}")
+            new_response = await self._perform_retry(prompt, session_str, image_urls, func_tool)
 
             new_text = ""
             if new_response and hasattr(new_response, 'completion_text'):
@@ -94,29 +104,29 @@ class IntelligentRetry(Star):
                 is_new_reply_ok = False
 
             if is_new_reply_ok:
-                logger.info(f"[Retry] 后台重试成功，正在直接发送新回复到会话: {session_desc}，内容: {new_text[:100]}...")
+                logger.info(f"[Retry] 后台重试成功，正在直接发送新回复到会话: {session_str}，内容: {new_text[:100]}...")
                 try:
                     if not new_text.strip():
-                        logger.error(f"[Retry] 生成回复内容为空，放弃发送。session: {session_desc}")
+                        logger.error(f"[Retry] 生成回复内容为空，放弃发送。session: {session_str}")
                         return
-                    await self.context.send_message(new_text, session)  # 使用 MessageSession 对象
-                    logger.info(f"[Retry] 新回复已成功发送。session: {session_desc}")
+                    await self.context.send_message(new_text, session_str)  # 直接使用 session 字符串
+                    logger.info(f"[Retry] 新回复已成功发送。session: {session_str}")
                     return
                 except Exception as e:
-                    logger.error(f"[Retry] 后台重试成功，但发送消息时发生错误: {e}，session: {session_desc}，内容: {new_text}", exc_info=True)
+                    logger.error(f"[Retry] 后台重试成功，但发送消息时发生错误: {e}，session: {session_str}，内容: {new_text}", exc_info=True)
                     return
 
             if attempt < self.max_attempts:
-                logger.warning(f"[Retry] 后台重试尝试失败，将在 {self.retry_delay} 秒后进行下一次尝试... session: {session_desc}")
+                logger.warning(f"[Retry] 后台重试尝试失败，将在 {self.retry_delay} 秒后进行下一次尝试... session: {session_str}")
                 await asyncio.sleep(self.retry_delay)
 
-        logger.error(f"[Retry] 所有 {self.max_attempts} 次后台重试均失败，放弃该次回复。session: {session_desc}")
+        logger.error(f"[Retry] 所有 {self.max_attempts} 次后台重试均失败，放弃该次回复。session: {session_str}")
         # 可选：重试全部失败后，主动通知用户
         try:
-            await self.context.send_message("很抱歉，AI 回复失败，请稍后再试。", session)  # 使用 MessageSession 对象
-            logger.info(f"[Retry] 已通知用户回复失败。session: {session_desc}")
+            await self.context.send_message("很抱歉，AI 回复失败，请稍后再试。", session_str)  # 直接使用 session 字符串
+            logger.info(f"[Retry] 已通知用户回复失败。session: {session_str}")
         except Exception as e:
-            logger.error(f"[Retry] 通知用户失败时发生异常: {e}，session: {session_desc}", exc_info=True)
+            logger.error(f"[Retry] 通知用户失败时发生异常: {e}，session: {session_str}", exc_info=True)
 
     @filter.on_decorating_result(priority=-100)
     async def check_and_retry(self, event: AstrMessageEvent):
@@ -165,37 +175,39 @@ class IntelligentRetry(Star):
 
             prompt_to_retry = event.message_str
             
-            # 获取会话对象
+            # 构建会话字符串
             session_to_use = None
+            platform = "aiocqhttp"  # AstrBot 默认平台
             
-            if hasattr(event, "session"):
-                # 直接使用事件的 session 属性（应该是 MessageSession 对象）
-                session_to_use = event.session
-                logger.debug(f"[Retry] 从事件获取到 session: {session_to_use}")
-            else:
-                # 如果没有直接的 session 对象，构建一个新的
-                try:
-                    platform = "aiocqhttp"  # AstrBot 默认平台
-                    msg_type = "FriendMessage" if getattr(event, "message_type", "") == "private" else "GroupMessage"
-                    
-                    raw_id = None
-                    # 按优先级尝试获取 ID
-                    if hasattr(event, "user_id") and event.message_type == "private":
-                        raw_id = str(event.user_id)
-                    elif hasattr(event, "group_id") and event.message_type == "group":
-                        raw_id = str(event.group_id)
-                    elif hasattr(event, "unified_msg_origin"):
-                        raw_id = str(event.unified_msg_origin)
-
-                    if raw_id:
-                        session_to_use = MessageSession(
-                            platform_name=platform,
-                            message_type=msg_type,
-                            session_id=raw_id
-                        )
-                        logger.debug(f"[Retry] 成功构建 session 对象: {session_to_use}")
-                except Exception as e:
-                    logger.error(f"[Retry] 构建 session 对象失败: {e}", exc_info=True)
+            # 1. 尝试获取消息类型和 ID
+            msg_type = "FriendMessage" if getattr(event, "message_type", "") == "private" else "GroupMessage"
+            raw_id = None
+            
+            # 按优先级尝试获取 ID
+            if hasattr(event, "user_id") and event.message_type == "private":
+                raw_id = str(event.user_id)
+            elif hasattr(event, "group_id") and event.message_type == "group":
+                raw_id = str(event.group_id)
+            elif hasattr(event, "unified_msg_origin"):
+                raw_id = str(event.unified_msg_origin)
+                
+            # 2. 构建标准格式的 session 字符串
+            if raw_id:
+                session_to_use = f"{platform}:{msg_type}:{raw_id}"
+                logger.debug(f"[Retry] 成功构建 session 字符串: {session_to_use}")
+            
+            # 3. 如果上述方法失败，尝试从现有属性获取
+            if not session_to_use and hasattr(event, "session"):
+                if isinstance(event.session, str):
+                    session_to_use = event.session
+                    logger.debug(f"[Retry] 从事件获取到 session 字符串: {session_to_use}")
+                else:
+                    # 可能是其他类型，尝试转换为字符串
+                    try:
+                        session_to_use = str(event.session)
+                        logger.debug(f"[Retry] 从事件 session 对象转换得到字符串: {session_to_use}")
+                    except Exception as e:
+                        logger.error(f"[Retry] 转换 session 对象失败: {e}", exc_info=True)
             
             if not session_to_use:
                 logger.error(f"[Retry] 无法获取或构建合法的 session。event: {event}")
