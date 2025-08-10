@@ -11,334 +11,222 @@ from astrbot.api.star import Context, Star, register
 @register(
     "intelligent_retry",
     "木有知 & 长安某",
-    "当LLM最终回复为空或错误时进行重试",
-    "2.4.0" # [根本性修正] 修复了对 tool_calls 的错误劫持，采用更可靠的事件响应判断
+    "当LLM回复为空或包含特定错误关键词时，自动进行多次重试，保持完整上下文和人设",
+    "2.5.0"
 )
 class IntelligentRetry(Star):
     """
-    一个AstrBot插件，通过重新构建请求的方式，实现带上下文的重试。
-    V2.4.0: 彻底修复了插件会错误地中断并重试正常 tool_calls 流程的问题。
-            现在插件会直接检查事件的原始LLM响应，如果为工具调用则不进行任何干预，
-            将控制权完全交还给框架，从根本上解决了连锁错误。
+    一个AstrBot插件，在检测到LLM回复为空或返回包含特定关键词的错误文本时，
+    自动进行多次重试，并完整保持原有的上下文和人设。
+    V2.5.0: 修复了上下文丢失和人设不一致的问题，确保重试时保持完全相同的对话环境。
     """
 
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.max_attempts = config.get('max_attempts', 3)
         self.retry_delay = config.get('retry_delay', 2)
-        default_keywords = "api 返回的内容为空\n请求失败\nAPI 返回的 completion 由于内容安全过滤被拒绝(非 AstrBot)\n调用失败\n处理失败"
+        default_keywords = "api 返回的内容为空\nAPI 返回的 completion 由于内容安全过滤被拒绝(非 AstrBot)\n调用失败"
         keywords_str = config.get('error_keywords', default_keywords)
         self.error_keywords = [k.strip().lower() for k in keywords_str.split('\n') if k.strip()]
+        # 兜底回复（可选）
+        self.fallback_reply = config.get('fallback_reply', "抱歉，刚才遇到服务波动，我已自动为你重试多次仍未成功。请稍后再试或换个说法。")
         
         logger.info(
-            f"已加载 [IntelligentRetry] 插件 v2.4.0, "
-            f"将在LLM最终回复无效时自动重试 (最多 {self.max_attempts} 次)。"
+            f"已加载 [IntelligentRetry] 插件 v2.5.0, "
+            f"将在LLM回复无效时自动重试 (最多 {self.max_attempts} 次)，保持完整上下文和人设。"
         )
 
-    async def _perform_retry(self, prompt: str, session_str: str, image_urls: list, func_tool: any):
-        """
-        根据具体信息，重新构建一个完整的请求并执行。
-        session_str 格式为 platform:type:id
-        """
+    async def _get_complete_context(self, unified_msg_origin: str):
+        """获取完整的对话上下文，包括当前消息"""
+        try:
+            curr_cid = await self.context.conversation_manager.get_curr_conversation_id(unified_msg_origin)
+            
+            if not curr_cid:
+                return []
+            
+            conv = await self.context.conversation_manager.get_conversation(unified_msg_origin, curr_cid)
+            
+            if not conv or not conv.history:
+                return []
+            
+            # 获取完整的历史对话，包括当前这次对话
+            context_history = await asyncio.to_thread(json.loads, conv.history)
+            return context_history
+            
+        except Exception as e:
+            logger.error(f"获取对话上下文时发生错误: {e}")
+            return []
+
+    async def _get_provider_config(self):
+        """获取 LLM 提供商的完整配置，包括人设"""
         provider = self.context.get_using_provider()
+        if not provider:
+            return None, None, None
+        
+        # 获取系统提示词（人设）
+        system_prompt = None
+        if hasattr(provider, "system_prompt"):
+            system_prompt = provider.system_prompt
+        elif hasattr(provider, "config") and provider.config:
+            system_prompt = provider.config.get("system_prompt")
+        
+        # 获取工具配置
+        func_tool = None
+        if hasattr(provider, "func_tool"):
+            func_tool = provider.func_tool
+        
+        return provider, system_prompt, func_tool
+
+    async def _perform_retry_with_context(self, event: AstrMessageEvent):
+        """执行重试，完整保持原有上下文和人设"""
+        provider, system_prompt, func_tool = await self._get_provider_config()
+        
         if not provider:
             logger.warning("LLM提供商未启用，无法重试。")
             return None
-            
+
         try:
-            # 从完整的 session 字符串中提取原始 ID
-            parts = session_str.split(":")
-            if len(parts) != 3:
-                logger.error(f"[Retry] session 字符串格式错误: {session_str}")
-                return None
-                
-            raw_session_id = parts[2]  # 使用最后一部分作为原始 ID
-            
-            curr_cid = await self.context.conversation_manager.get_curr_conversation_id(raw_session_id)
-            context_history = []
-            if curr_cid:
-                conv = await self.context.conversation_manager.get_conversation(raw_session_id, curr_cid)
-                if conv and conv.history:
-                    full_history = await asyncio.to_thread(json.loads, conv.history)
-                    context_history = full_history[:-1] if full_history else []
-
-            system_prompt = provider.system_prompt if hasattr(provider, "system_prompt") else None
-            if not system_prompt and hasattr(provider, "config"):
-                 system_prompt = provider.config.get("system_prompt")
-
-            logger.debug(f"正在重新构建请求进行重试... Prompt: '{prompt}'")
-            llm_response = await provider.text_chat(
-                prompt=prompt, contexts=context_history, image_urls=image_urls,
-                system_prompt=system_prompt, func_tool=func_tool
-            )
-            return llm_response
-        except Exception as e:
-            logger.error(f"重试调用LLM时发生错误: {e}", exc_info=True)
-            return None
-
-    async def _retry_task(self, prompt: str, session_str: str, image_urls: list, func_tool: any):
-        """独立的后台任务，接收具体的数据，与 event 对象生命周期解耦"""
-        # 检查 session 字符串格式
-        parts = str(session_str).split(":")
-        if len(parts) != 3:
-            logger.error(f"[Retry] session 字符串格式错误: {session_str}")
-            return
-        
-        for attempt in range(1, self.max_attempts + 1):
-            logger.info(f"[Retry] 后台重试任务: 第 {attempt}/{self.max_attempts} 次尝试... session: {session_str}")
-            new_response = await self._perform_retry(prompt, session_str, image_urls, func_tool)
-
-            new_text = ""
-            if new_response and hasattr(new_response, 'completion_text'):
-                new_text = new_response.completion_text.strip()
-
-            is_new_reply_ok = False
-            if new_text and not any(keyword in new_text.lower() for keyword in self.error_keywords):
-                is_new_reply_ok = True
-
-            finish_reason = 'stop'
-            if new_response and hasattr(new_response, 'raw') and hasattr(new_response.raw, 'choices') and new_response.raw.choices:
-                finish_reason = getattr(new_response.raw.choices[0], 'finish_reason', 'stop')
-
-            if not new_text and finish_reason == 'stop':
-                is_new_reply_ok = False
-
-            if is_new_reply_ok:
-                logger.info(f"[Retry] 后台重试成功，正在直接发送新回复到会话: {session_str}，内容: {new_text[:100]}...")
-                try:
-                    if not new_text.strip():
-                        logger.error(f"[Retry] 生成回复内容为空，放弃发送。session: {session_str}")
-                        return
-                    
-                    # 确保 session 字符串格式正确
-                    parts = session_str.split(":")
-                    if len(parts) == 2:  # 如果只有两部分（type:id），自动添加平台前缀
-                        session_str = f"aiocqhttp:{session_str}"
-                        logger.debug(f"[Retry] 自动补充平台前缀，完整 session: {session_str}")
-                    
-                    if session_str.count(":") == 2:  # 重新检查完整性
-                        await self.context.send_message(new_text, session_str)
-                        logger.info(f"[Retry] 新回复已成功发送。session: {session_str}")
-                        return
-                    else:
-                        logger.error(f"[Retry] session 字符串格式错误，无法发送消息: {session_str}")
-                        return
-                except Exception as e:
-                    logger.error(f"[Retry] 后台重试成功，但发送消息时发生错误: {e}，session: {session_str}，内容: {new_text}", exc_info=True)
-                    return
-
-            if attempt < self.max_attempts:
-                logger.warning(f"[Retry] 后台重试尝试失败，将在 {self.retry_delay} 秒后进行下一次尝试... session: {session_str}")
-                await asyncio.sleep(self.retry_delay)
-
-        logger.error(f"[Retry] 所有 {self.max_attempts} 次后台重试均失败，放弃该次回复。session: {session_str}")
-        failure_msg = f"很抱歉，AI 回复失败。已尝试重试 {self.max_attempts} 次但仍然失败，请稍后再试。"
-        # 重试失败后，尝试通知用户
-        if session_str and session_str.count(":") == 2:
+            # 获取完整的对话上下文
+            context_history = await self._get_complete_context(event.unified_msg_origin)
+            # 判断上下文中是否已经包含 system 消息
+            has_system_in_contexts = False
+            sys_preview = ""
             try:
-                await self.context.send_message(failure_msg, session_str)
-                logger.info(f"[Retry] 已通知用户失败情况。session: {session_str}")
-            except Exception as e:
-                logger.error(f"[Retry] 尝试发送失败通知时发生异常: {e}，session: {session_str}", exc_info=True)
-                if "不合法的 session 字符串" in str(e):
-                    logger.error("[Retry] 检测到 session 字符串格式问题，这可能是由于会话状态已过期或无效")
-        else:
-            logger.error(f"[Retry] session 字符串格式错误（需要包含两个冒号），无法发送失败通知: {session_str}")
-
-    @filter.on_decorating_result(priority=-100)
-    async def check_and_retry(self, event: AstrMessageEvent):
-        """
-        检测错误。只有在LLM的最终回复为空或包含错误时才触发重试。
-        """
-        if self.max_attempts <= 0:
-            return
-
-        should_retry = False
-        
-        # [核心修正] 直接从事件对象获取最原始的LLM响应来进行判断
-        _llm_response = getattr(event, 'llm_response', None)
-        if _llm_response and hasattr(_llm_response, 'choices') and _llm_response.choices:
-            finish_reason = getattr(_llm_response.choices[0], 'finish_reason', None)
-            # 检查特殊的完成原因
-            if finish_reason == 'tool_calls':
-                logger.debug("检测到正常的工具调用中间步骤，插件将不进行任何干预。")
-                return # **直接退出，让框架核心继续处理**
-            elif finish_reason == 'content_filter':
-                # 内容安全过滤也需要重试，但记录下来
-                logger.warning("检测到内容安全过滤，将尝试重试。")
-                should_retry = True
-            elif finish_reason == 'length':
-                # 长度超限是正常情况
+                for m in context_history:
+                    if isinstance(m, dict) and str(m.get('role', '')).lower() == 'system':
+                        has_system_in_contexts = True
+                        sys_preview = str(m.get('content', ''))[:60]
+                        break
+            except Exception:
                 pass
-            elif finish_reason == 'stop':
-                # 正常停止，检查是否有其他错误
-                pass
-            else:
-                # 其他未知的完成原因，可能需要重试
-                logger.warning(f"检测到未知的完成原因: {finish_reason}，将尝试重试")
-                should_retry = True
-        
-        # 获取原始错误信息（如果有）
-        raw_error = getattr(_llm_response, 'error', None)
-        if raw_error:
-            logger.debug(f"检测到原始错误信息: {raw_error}")
-            should_retry = True
-
-        # --- 只有在不是 tool_calls 的情况下，才执行下面的错误/空回复检查 ---
-        # 只对最终输出的空/错误回复触发重试
-        result = event.get_result()
-        is_truly_empty = not result or not result.chain
-        if not is_truly_empty:
-            is_truly_empty = not any(
-                (isinstance(c, Comp.Plain) and c.text.strip()) or not isinstance(c, Comp.Plain)
-                for c in result.chain
-            )
-        message_str = result.get_plain_text() if result else ""
-
-        # 检查是否包含明确的错误关键词
-        if message_str:
-            lower_message_str = message_str.lower()
             
-            # 0. 某些情况需要特殊处理
-            rate_limit_reasons = [
-                "rate limit",  # API速率限制
-                "请降低请求频率"  # 自定义的频率限制消息
-            ]
-            
-            if any(reason in lower_message_str for reason in rate_limit_reasons):
-                # 速率限制的情况，增加重试延迟
-                self.retry_delay = max(self.retry_delay * 2, 10)  # 最少10秒
-                logger.info(f"检测到速率限制，增加重试延迟到 {self.retry_delay} 秒")
-
-            # 1. 检查是否有明确的错误标识
-            error_indicators = {
-                "标准错误": ("错误类型:" in message_str and "错误信息:" in message_str),
-                "请求失败": "astrbot 请求失败" in lower_message_str,
-                "API错误": any(keyword in lower_message_str for keyword in self.error_keywords),
-                "控制台错误": "请在控制台查看和分享错误详情" in message_str,
-                # 补充常见的错误模式
-                "连接超时": "timeout" in lower_message_str,
-                "未知错误": "unknown error" in lower_message_str,
-                "异常": "exception" in lower_message_str
-            }
-            
-            # 检查是否命中任何错误标识
-            matched_errors = [name for name, condition in error_indicators.items() if condition]
-            
-            if matched_errors:
-                error_types = ", ".join(matched_errors)
-                logger.warning(f"检测到系统错误响应 [{error_types}]，准备启动后台重试: '{message_str}'")
-                should_retry = True
-                
-        # 检查是否是真正的空回复（并且已经排除了tool_calls的情况）
-        if not should_retry and is_truly_empty:
-            # 获取原始的 LLM 响应状态
-            llm_error = getattr(_llm_response, 'error', None)
-            if llm_error:
-                logger.warning(f"检测到LLM响应错误（非工具调用），准备启动后台重试。错误: {llm_error}")
-                should_retry = True
-            else:
-                logger.warning("检测到最终输出为空（非工具调用），准备启动后台重试。")
-                should_retry = True
-
-        if should_retry:
-            # 即使是图片消息没有文本，也应该重试，因为图片URL会被传递
-            logger.info("创建后台重试任务，并立即阻止当前错误/空回复的发送。")
-
-            # 获取用户的原始输入，包括文本和图片
-            prompt_to_retry = getattr(event, 'message_str', '') or ''
-            
-            # 构建会话字符串
-            session_to_use = None
-            
-            # 1. 首先尝试从 unified_msg_origin 获取，如果它已经包含完整格式
-            if hasattr(event, "unified_msg_origin"):
-                origin = str(event.unified_msg_origin)
-                parts = origin.split(":")
-                # 如果已经是标准格式，直接使用最后一组作为实际ID
-                if len(parts) > 3:
-                    last_parts = parts[-3:]  # 取最后三个部分
-                    session_to_use = ":".join(last_parts)
-                    logger.debug(f"[Retry] 从 unified_msg_origin 提取得到 session: {session_to_use}")
-            
-            # 2. 如果上面的方法失败，尝试从基本属性构建
-            if not session_to_use:
-                # 优先从 session 属性获取会话类型和ID
-                if hasattr(event, "message_type") and hasattr(event, "session"):
-                    try:
-                        msg_type = "FriendMessage" if event.message_type == "private" else "GroupMessage"
-                        session_id = str(event.user_id) if event.message_type == "private" else str(event.group_id)
-                        session_to_use = f"{msg_type}:{session_id}"
-                        logger.debug(f"[Retry] 从会话属性构建 session: {session_to_use}")
-                    except Exception as e:
-                        logger.error(f"[Retry] 构建 session 字符串失败: {e}")
-            
-            # 3. 最后尝试从 session 属性获取
-            if not session_to_use and hasattr(event, "session"):
-                if isinstance(event.session, str):
-                    session_to_use = event.session
-                    logger.debug(f"[Retry] 从事件获取到 session 字符串: {session_to_use}")
-                else:
-                    # 可能是其他类型，尝试转换为字符串
-                    try:
-                        session_str = str(event.session)
-                        # 验证并提取正确的格式
-                        parts = session_str.split(":")
-                        if len(parts) >= 3:
-                            session_to_use = ":".join(parts[-3:])  # 取最后三个部分
-                            logger.debug(f"[Retry] 从事件 session 对象转换得到字符串: {session_to_use}")
-                    except Exception as e:
-                        logger.error(f"[Retry] 转换 session 对象失败: {e}", exc_info=True)
-            
-            # 严格检查 session 字符串的格式
-            if not session_to_use or session_to_use.count(":") != 2:
-                logger.error(f"[Retry] 无法获取或构建合法的 session（需要包含两个冒号）。event: {event}")
-                try:
-                    if hasattr(event, "message_type") and hasattr(event, "user_id") and event.message_type == "private":
-                        # 尝试最后一次用硬编码方式构建
-                        session_to_use = f"aiocqhttp:FriendMessage:{event.user_id}"
-                    elif hasattr(event, "message_type") and hasattr(event, "group_id") and event.message_type == "group":
-                        session_to_use = f"aiocqhttp:GroupMessage:{event.group_id}"
-                except:
-                    pass
-                
-                if not session_to_use or session_to_use.count(":") != 2:
-                    # 如果还是无法构建合法的 session，尝试告知用户
-                    logger.error("[Retry] 即使是最后的尝试也无法构建合法的 session，放弃重试")
-                    return
-
-            images_to_retry = [
+            # 获取图片URL
+            image_urls = [
                 comp.url
                 for comp in event.message_obj.message
                 if isinstance(comp, Comp.Image) and hasattr(comp, "url") and comp.url
             ]
 
-            provider = self.context.get_using_provider()
-            func_tool_to_retry = None
-            if provider and hasattr(provider, "func_tool"):
-                func_tool_to_retry = provider.func_tool
+            logger.debug(f"正在使用完整上下文进行重试... Prompt: '{event.message_str}'")
+            logger.debug(
+                f"上下文长度: {len(context_history)}, 系统提示词存在: {system_prompt is not None}, "
+                f"上下文含system: {has_system_in_contexts}{'，示例: '+sys_preview if has_system_in_contexts and sys_preview else ''}"
+            )
+            
+            # 使用完整的参数进行重试
+            kwargs = {
+                'prompt': event.message_str,
+                'contexts': context_history,
+                'image_urls': image_urls,
+                'func_tool': func_tool,
+            }
+            # 仅当上下文没有 system 消息时，才额外传递 provider 的 system_prompt
+            if not has_system_in_contexts and system_prompt:
+                kwargs['system_prompt'] = system_prompt
 
-            logger.debug(f"[Retry] 创建后台重试任务，session: {session_to_use}")
-            logger.debug(f"[Retry] 重试信息：prompt='{prompt_to_retry}', images={len(images_to_retry)}张")
+            llm_response = await provider.text_chat(**kwargs)
             
-            # 创建异步任务并保存引用以防止被垃圾回收
-            retry_task = asyncio.create_task(self._retry_task(
-                prompt_to_retry,
-                session_to_use,
-                images_to_retry,
-                func_tool_to_retry 
-            ))
+            return llm_response
             
-            # 添加完成回调以记录任务状态
-            def log_task_done(task):
-                try:
-                    task.result()  # 获取结果会重新抛出任务中的异常
-                    logger.debug("[Retry] 后台重试任务已完成")
-                except Exception as e:
-                    logger.error(f"[Retry] 后台重试任务失败: {e}", exc_info=True)
-            
-            retry_task.add_done_callback(log_task_done)
-            
+        except Exception as e:
+            logger.error(f"重试调用LLM时发生错误: {e}")
+            return None
+
+    def _should_retry(self, result):
+        """判断是否需要重试"""
+        if not result:
+            logger.debug("结果为空，需要重试")
+            return True
+        
+        # 检查是否有实际内容
+        has_content = any(
+            (isinstance(c, Comp.Plain) and c.text.strip())
+            or not isinstance(c, Comp.Plain)  # 任何非Plain类型的消息段都算作有内容
+            for c in result.chain
+        )
+        
+        if not has_content:
+            logger.debug("检测到空回复，需要重试")
+            return True
+        
+        # 检查是否包含错误关键词
+        message_str = result.get_plain_text()
+        if message_str:
+            lower_message_str = message_str.lower()
+            for keyword in self.error_keywords:
+                if keyword in lower_message_str:
+                    logger.debug(f"检测到错误关键词 '{keyword}'，需要重试")
+                    return True
+        
+        return False
+
+    @filter.on_decorating_result(priority=-1)
+    async def check_and_retry(self, event: AstrMessageEvent):
+        """
+        检查结果并进行重试，保持完整的上下文和人设
+        """
+        # 如果禁用重试则直接返回
+        if self.max_attempts <= 0:
+            return
+
+        # 检查原始LLM响应，如果是工具调用则不干预
+        _llm_response = getattr(event, 'llm_response', None)
+        if _llm_response and hasattr(_llm_response, 'choices') and _llm_response.choices:
+            finish_reason = getattr(_llm_response.choices[0], 'finish_reason', None)
+            if finish_reason == 'tool_calls':
+                logger.debug("检测到正常的工具调用，不进行干预")
+                return
+
+        result = event.get_result()
+        
+        # 检查是否需要重试
+        if not self._should_retry(result):
+            return
+        
+        # 只有在用户发送了文本内容时才进行重试
+        if not event.message_str or not event.message_str.strip():
+            logger.debug("用户消息为空，跳过重试")
+            return
+
+        logger.info("检测到需要重试的情况，开始重试流程")
+
+        # 进行重试（带指数退避）
+        delay = max(0, int(self.retry_delay))
+        for attempt in range(1, self.max_attempts + 1):
+            logger.info(f"第 {attempt}/{self.max_attempts} 次重试...")
+
+            new_response = await self._perform_retry_with_context(event)
+
+            if not new_response or not getattr(new_response, 'completion_text', ''):
+                logger.warning(f"第 {attempt} 次重试返回空结果")
+                if attempt < self.max_attempts and delay > 0:
+                    await asyncio.sleep(delay)
+                    # 指数退避，最高不超过 30 秒
+                    delay = min(delay * 2, 30)
+                continue
+
+            new_text = new_response.completion_text.strip()
+
+            # 检查新回复是否包含错误关键词
+            new_text_lower = new_text.lower()
+            has_error = any(keyword in new_text_lower for keyword in self.error_keywords)
+
+            if new_text and not has_error:
+                logger.info(f"第 {attempt} 次重试成功，生成有效回复")
+                # 直接替换结果，保持事件流程的完整性
+                event.set_result(event.plain_result(new_text))
+                return
+            else:
+                logger.warning(f"第 {attempt} 次重试仍包含错误或为空: {new_text[:100]}...")
+                if attempt < self.max_attempts and delay > 0:
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, 30)
+
+        logger.error(f"所有 {self.max_attempts} 次重试均失败")
+        # 若配置了兜底回复，则发送友好提示；否则维持清空并停止
+        if self.fallback_reply and self.fallback_reply.strip():
+            event.set_result(event.plain_result(self.fallback_reply.strip()))
+        else:
             event.clear_result()
             event.stop_event()
 
