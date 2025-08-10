@@ -113,7 +113,7 @@ class IntelligentRetry(Star):
         except Exception as e:
             logger.error(f"[Retry] 通知用户失败时发生异常: {e}，session: {unified_msg_origin}", exc_info=True)
 
-    @filter.on_decorating_result(priority=-1)
+    @filter.on_decorating_result(priority=-100)
     async def check_and_retry(self, event: AstrMessageEvent):
         """
         检测错误。只有在LLM的最终回复为空或包含错误时才触发重试。
