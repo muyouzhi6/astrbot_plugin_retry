@@ -35,9 +35,10 @@ class IntelligentRetry(Star):
             f"将在LLM最终回复无效时自动重试 (最多 {self.max_attempts} 次)。"
         )
 
-    async def _perform_retry(self, prompt: str, unified_msg_origin: str, image_urls: list, func_tool: any):
+    async def _perform_retry(self, prompt: str, session_str: str, image_urls: list, func_tool: any):
         """
         根据具体信息，重新构建一个完整的请求并执行。
+        session_str 格式为 platform:type:id
         """
         provider = self.context.get_using_provider()
         if not provider:
@@ -46,7 +47,12 @@ class IntelligentRetry(Star):
             
         try:
             # 从完整的 session 字符串中提取原始 ID
-            raw_session_id = unified_msg_origin.split(":")[-1] if ":" in unified_msg_origin else unified_msg_origin
+            parts = session_str.split(":")
+            if len(parts) != 3:
+                logger.error(f"[Retry] session 字符串格式错误: {session_str}")
+                return None
+                
+            raw_session_id = parts[2]  # 使用最后一部分作为原始 ID
             
             curr_cid = await self.context.conversation_manager.get_curr_conversation_id(raw_session_id)
             context_history = []
@@ -163,19 +169,25 @@ class IntelligentRetry(Star):
 
             prompt_to_retry = event.message_str
             
-            # 获取完整的 session 字符串
-            session_id_to_use = None
-            if hasattr(event, "get_session"):
-                session_id_to_use = event.get_session()
-            elif hasattr(event, "session"):
-                session_id_to_use = event.session
-            elif isinstance(event, AstrMessageEvent):
-                # 如果是 AstrBot 事件，尝试构建完整的 session 字符串
-                platform = getattr(event, "platform", "aiocqhttp")
-                msg_type = "FriendMessage" if hasattr(event, "user_id") else "GroupMessage"
-                session_id = getattr(event, "unified_msg_origin", None) or getattr(event, "session_id", None)
-                if session_id:
-                    session_id_to_use = f"{platform}:{msg_type}:{session_id}"
+            # 获取会话标识
+            platform = "aiocqhttp"  # AstrBot 默认平台
+            msg_type = "FriendMessage" if getattr(event, "message_type", "") == "private" else "GroupMessage"
+            
+            # 获取原始会话 ID
+            raw_id = None
+            if hasattr(event, "unified_msg_origin"):
+                raw_id = event.unified_msg_origin
+            elif hasattr(event, "user_id"):
+                raw_id = event.user_id
+            elif hasattr(event, "group_id"):
+                raw_id = event.group_id
+                
+            if not raw_id:
+                logger.error(f"[Retry] 无法从事件中获取会话 ID: {event}")
+                return
+                
+            # 构建完整的 session 字符串
+            session_id_to_use = f"{platform}:{msg_type}:{raw_id}"
 
             if not session_id_to_use:
                 logger.error(f"[Retry] 无法获取合法的 session 字符串，将放弃重试。event: {event}")
