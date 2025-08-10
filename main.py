@@ -169,19 +169,39 @@ class IntelligentRetry(Star):
         # 检查是否包含明确的错误关键词
         if message_str:
             lower_message_str = message_str.lower()
-            if any(keyword in lower_message_str for keyword in self.error_keywords):
-                logger.warning(f"检测到最终输出错误文本，准备启动后台重试: '{message_str}'")
+            
+            # 1. 检查是否包含任何已知的错误关键词
+            is_error = any(keyword in lower_message_str for keyword in self.error_keywords)
+            
+            # 2. 判断是否为典型的错误响应格式
+            is_error_format = (
+                ("错误类型:" in message_str and "错误信息:" in message_str) or
+                "astrbot 请求失败" in lower_message_str or
+                "请在控制台查看和分享错误详情" in message_str
+            )
+            
+            # 如果符合错误特征，就触发重试
+            if is_error and is_error_format:
+                logger.warning(f"检测到系统错误响应，准备启动后台重试: '{message_str}'")
                 should_retry = True
-
+                
         # 检查是否是真正的空回复（并且已经排除了tool_calls的情况）
         if not should_retry and is_truly_empty:
-            logger.warning("检测到最终输出为空（非工具调用），准备启动后台重试。")
-            should_retry = True
+            # 获取原始的 LLM 响应状态
+            llm_error = getattr(_llm_response, 'error', None)
+            if llm_error:
+                logger.warning(f"检测到LLM响应错误（非工具调用），准备启动后台重试。错误: {llm_error}")
+                should_retry = True
+            else:
+                logger.warning("检测到最终输出为空（非工具调用），准备启动后台重试。")
+                should_retry = True
 
-        if should_retry and event.message_str.strip():
+        if should_retry:
+            # 即使是图片消息没有文本，也应该重试，因为图片URL会被传递
             logger.info("创建后台重试任务，并立即阻止当前错误/空回复的发送。")
 
-            prompt_to_retry = event.message_str
+            # 获取用户的原始输入，包括文本和图片
+            prompt_to_retry = getattr(event, 'message_str', '') or ''
             
             # 构建会话字符串
             session_to_use = None
@@ -245,12 +265,25 @@ class IntelligentRetry(Star):
                 func_tool_to_retry = provider.func_tool
 
             logger.debug(f"[Retry] 创建后台重试任务，session: {session_to_use}")
-            asyncio.create_task(self._retry_task(
+            logger.debug(f"[Retry] 重试信息：prompt='{prompt_to_retry}', images={len(images_to_retry)}张")
+            
+            # 创建异步任务并保存引用以防止被垃圾回收
+            retry_task = asyncio.create_task(self._retry_task(
                 prompt_to_retry,
                 session_to_use,
                 images_to_retry,
                 func_tool_to_retry 
             ))
+            
+            # 添加完成回调以记录任务状态
+            def log_task_done(task):
+                try:
+                    task.result()  # 获取结果会重新抛出任务中的异常
+                    logger.debug("[Retry] 后台重试任务已完成")
+                except Exception as e:
+                    logger.error(f"[Retry] 后台重试任务失败: {e}", exc_info=True)
+            
+            retry_task.add_done_callback(log_task_done)
             
             event.clear_result()
             event.stop_event()
