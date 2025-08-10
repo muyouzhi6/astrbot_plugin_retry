@@ -177,26 +177,34 @@ class IntelligentRetry(Star):
             
             # 构建会话字符串
             session_to_use = None
-            platform = "aiocqhttp"  # AstrBot 默认平台
             
-            # 1. 尝试获取消息类型和 ID
-            msg_type = "FriendMessage" if getattr(event, "message_type", "") == "private" else "GroupMessage"
-            raw_id = None
+            # 1. 首先尝试从 unified_msg_origin 获取，如果它已经包含完整格式
+            if hasattr(event, "unified_msg_origin"):
+                origin = str(event.unified_msg_origin)
+                parts = origin.split(":")
+                # 如果已经是标准格式，直接使用最后一组作为实际ID
+                if len(parts) > 3:
+                    last_parts = parts[-3:]  # 取最后三个部分
+                    session_to_use = ":".join(last_parts)
+                    logger.debug(f"[Retry] 从 unified_msg_origin 提取得到 session: {session_to_use}")
             
-            # 按优先级尝试获取 ID
-            if hasattr(event, "user_id") and event.message_type == "private":
-                raw_id = str(event.user_id)
-            elif hasattr(event, "group_id") and event.message_type == "group":
-                raw_id = str(event.group_id)
-            elif hasattr(event, "unified_msg_origin"):
-                raw_id = str(event.unified_msg_origin)
+            # 2. 如果上面的方法失败，尝试从基本属性构建
+            if not session_to_use:
+                platform = "aiocqhttp"  # AstrBot 默认平台
+                msg_type = "FriendMessage" if getattr(event, "message_type", "") == "private" else "GroupMessage"
+                raw_id = None
                 
-            # 2. 构建标准格式的 session 字符串
-            if raw_id:
-                session_to_use = f"{platform}:{msg_type}:{raw_id}"
-                logger.debug(f"[Retry] 成功构建 session 字符串: {session_to_use}")
+                # 按优先级尝试获取 ID
+                if hasattr(event, "user_id") and event.message_type == "private":
+                    raw_id = str(event.user_id)
+                elif hasattr(event, "group_id") and event.message_type == "group":
+                    raw_id = str(event.group_id)
+                
+                if raw_id:
+                    session_to_use = f"{platform}:{msg_type}:{raw_id}"
+                    logger.debug(f"[Retry] 成功构建 session 字符串: {session_to_use}")
             
-            # 3. 如果上述方法失败，尝试从现有属性获取
+            # 3. 最后尝试从 session 属性获取
             if not session_to_use and hasattr(event, "session"):
                 if isinstance(event.session, str):
                     session_to_use = event.session
@@ -204,8 +212,12 @@ class IntelligentRetry(Star):
                 else:
                     # 可能是其他类型，尝试转换为字符串
                     try:
-                        session_to_use = str(event.session)
-                        logger.debug(f"[Retry] 从事件 session 对象转换得到字符串: {session_to_use}")
+                        session_str = str(event.session)
+                        # 验证并提取正确的格式
+                        parts = session_str.split(":")
+                        if len(parts) >= 3:
+                            session_to_use = ":".join(parts[-3:])  # 取最后三个部分
+                            logger.debug(f"[Retry] 从事件 session 对象转换得到字符串: {session_to_use}")
                     except Exception as e:
                         logger.error(f"[Retry] 转换 session 对象失败: {e}", exc_info=True)
             
