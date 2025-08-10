@@ -109,9 +109,14 @@ class IntelligentRetry(Star):
                     if not new_text.strip():
                         logger.error(f"[Retry] 生成回复内容为空，放弃发送。session: {session_str}")
                         return
-                    await self.context.send_message(new_text, session_str)  # 直接使用 session 字符串
-                    logger.info(f"[Retry] 新回复已成功发送。session: {session_str}")
-                    return
+                    # 确保 session 字符串格式正确并进行消息发送
+                    if session_str and session_str.count(":") == 2:
+                        await self.context.send_message(new_text, session_str)
+                        logger.info(f"[Retry] 新回复已成功发送。session: {session_str}")
+                        return
+                    else:
+                        logger.error(f"[Retry] session 字符串格式错误，无法发送消息: {session_str}")
+                        return
                 except Exception as e:
                     logger.error(f"[Retry] 后台重试成功，但发送消息时发生错误: {e}，session: {session_str}，内容: {new_text}", exc_info=True)
                     return
@@ -122,11 +127,14 @@ class IntelligentRetry(Star):
 
         logger.error(f"[Retry] 所有 {self.max_attempts} 次后台重试均失败，放弃该次回复。session: {session_str}")
         # 可选：重试全部失败后，主动通知用户
-        try:
-            await self.context.send_message("很抱歉，AI 回复失败，请稍后再试。", session_str)  # 直接使用 session 字符串
-            logger.info(f"[Retry] 已通知用户回复失败。session: {session_str}")
-        except Exception as e:
-            logger.error(f"[Retry] 通知用户失败时发生异常: {e}，session: {session_str}", exc_info=True)
+        if session_str and session_str.count(":") == 2:
+            try:
+                await self.context.send_message("很抱歉，AI 回复失败，请稍后再试。", session_str)
+                logger.info(f"[Retry] 已通知用户回复失败。session: {session_str}")
+            except Exception as e:
+                logger.error(f"[Retry] 通知用户失败时发生异常: {e}，session: {session_str}", exc_info=True)
+        else:
+            logger.error(f"[Retry] session 字符串格式错误，无法发送失败通知: {session_str}")
 
     @filter.on_decorating_result(priority=-100)
     async def check_and_retry(self, event: AstrMessageEvent):
