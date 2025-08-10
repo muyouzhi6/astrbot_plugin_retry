@@ -45,10 +45,13 @@ class IntelligentRetry(Star):
             return None
             
         try:
-            curr_cid = await self.context.conversation_manager.get_curr_conversation_id(unified_msg_origin)
+            # 从完整的 session 字符串中提取原始 ID
+            raw_session_id = unified_msg_origin.split(":")[-1] if ":" in unified_msg_origin else unified_msg_origin
+            
+            curr_cid = await self.context.conversation_manager.get_curr_conversation_id(raw_session_id)
             context_history = []
             if curr_cid:
-                conv = await self.context.conversation_manager.get_conversation(unified_msg_origin, curr_cid)
+                conv = await self.context.conversation_manager.get_conversation(raw_session_id, curr_cid)
                 if conv and conv.history:
                     full_history = await asyncio.to_thread(json.loads, conv.history)
                     context_history = full_history[:-1] if full_history else []
