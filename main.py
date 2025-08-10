@@ -169,25 +169,48 @@ class IntelligentRetry(Star):
 
             prompt_to_retry = event.message_str
             
-            # 获取会话标识
-            platform = "aiocqhttp"  # AstrBot 默认平台
-            msg_type = "FriendMessage" if getattr(event, "message_type", "") == "private" else "GroupMessage"
+            # 尝试直接获取或构建 session 字符串
+            session_id_to_use = None
             
-            # 获取原始会话 ID
-            raw_id = None
-            if hasattr(event, "unified_msg_origin"):
-                raw_id = event.unified_msg_origin
-            elif hasattr(event, "user_id"):
-                raw_id = event.user_id
-            elif hasattr(event, "group_id"):
-                raw_id = event.group_id
+            # 1. 尝试直接获取标准格式的 session
+            if hasattr(event, "session"):
+                session_id_to_use = event.session
+            # 2. 尝试从 user_id/group_id 构建
+            else:
+                platform = "aiocqhttp"  # AstrBot 默认平台
+                msg_type = None
+                raw_id = None
                 
-            if not raw_id:
-                logger.error(f"[Retry] 无法从事件中获取会话 ID: {event}")
+                if hasattr(event, "message_type"):
+                    if event.message_type == "private":
+                        msg_type = "FriendMessage"
+                        raw_id = getattr(event, "user_id", None)
+                    elif event.message_type == "group":
+                        msg_type = "GroupMessage"
+                        raw_id = getattr(event, "group_id", None)
+                
+                # 如果上面都没取到，尝试其他属性
+                if not raw_id and hasattr(event, "unified_msg_origin"):
+                    # 如果 unified_msg_origin 已经是完整格式，直接使用
+                    if ":" in str(event.unified_msg_origin) and len(str(event.unified_msg_origin).split(":")) == 3:
+                        session_id_to_use = event.unified_msg_origin
+                    else:
+                        raw_id = event.unified_msg_origin
+                        if not msg_type:  # 如果之前没确定消息类型
+                            msg_type = "FriendMessage"  # 默认私聊
+                
+                # 如果有必要的信息就构建完整 session 字符串
+                if not session_id_to_use and platform and msg_type and raw_id:
+                    session_id_to_use = f"{platform}:{msg_type}:{raw_id}"
+            
+            if not session_id_to_use:
+                logger.error(f"[Retry] 无法获取或构建合法的 session 字符串。event: {event}")
                 return
                 
-            # 构建完整的 session 字符串
-            session_id_to_use = f"{platform}:{msg_type}:{raw_id}"
+            # 确保 session 字符串格式正确
+            if len(str(session_id_to_use).split(":")) != 3:
+                logger.error(f"[Retry] 构建的 session 字符串格式不正确: {session_id_to_use}")
+                return
 
             if not session_id_to_use:
                 logger.error(f"[Retry] 无法获取合法的 session 字符串，将放弃重试。event: {event}")
