@@ -12,14 +12,14 @@ from astrbot.api.star import Context, Star, register
     "intelligent_retry",
     "木有知 & 长安某",
     "当LLM最终回复为空或错误时进行重试",
-    "2.3.3" # [最终修正] 采用更可靠的tool_calls属性判断，并加固后台任务的参数传递
+    "2.4.0" # [根本性修正] 修复了对 tool_calls 的错误劫持，采用更可靠的事件响应判断
 )
 class IntelligentRetry(Star):
     """
     一个AstrBot插件，通过重新构建请求的方式，实现带上下文的重试。
-    V2.3.3: 采用检查 result.tool_calls 的方式，更准确地识别工具调用步骤，
-            并强制转换 session 字符串，彻底修复了所有已知的重试逻辑问题。
-    V2.3.2: 修正了后台重试任务无法获取到原始请求的工具(Tools)列表的问题。
+    V2.4.0: 彻底修复了插件会错误地中断并重试正常 tool_calls 流程的问题。
+            现在插件会直接检查事件的原始LLM响应，如果为工具调用则不进行任何干预，
+            将控制权完全交还给框架，从根本上解决了连锁错误。
     """
 
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -31,7 +31,7 @@ class IntelligentRetry(Star):
         self.error_keywords = [k.strip().lower() for k in keywords_str.split('\n') if k.strip()]
         
         logger.info(
-            f"已加载 [IntelligentRetry] 插件 v2.3.3, "
+            f"已加载 [IntelligentRetry] 插件 v2.4.0, "
             f"将在LLM最终回复无效时自动重试 (最多 {self.max_attempts} 次)。"
         )
 
@@ -111,13 +111,18 @@ class IntelligentRetry(Star):
         if self.max_attempts <= 0:
             return
 
+        # [核心修正] 直接从事件对象获取最原始的LLM响应来进行判断
+        _llm_response = getattr(event, 'llm_response', None)
+        if _llm_response and hasattr(_llm_response, 'choices') and _llm_response.choices:
+            finish_reason = getattr(_llm_response.choices[0], 'finish_reason', None)
+            # 如果是工具调用，这是正常中间步骤，插件绝不能干预
+            if finish_reason == 'tool_calls':
+                logger.debug("检测到正常的工具调用中间步骤，插件将不进行任何干预。")
+                return # **直接退出，让框架核心继续处理**
+
+        # --- 只有在不是 tool_calls 的情况下，才执行下面的错误/空回复检查 ---
+        
         result = event.get_result()
-
-        # 最优先、最可靠的判断：如果结果中包含工具调用，则这绝对是正常步骤，直接跳过。
-        if result and hasattr(result, 'tool_calls') and result.tool_calls:
-            logger.debug("检测到正常的工具调用步骤，跳过重试检查。")
-            return
-
         is_truly_empty = not result or not result.chain
         if not is_truly_empty:
             is_truly_empty = not any(
@@ -128,22 +133,22 @@ class IntelligentRetry(Star):
         should_retry = False
         message_str = result.get_plain_text() if result else ""
 
+        # 检查是否包含明确的错误关键词
         if message_str:
             lower_message_str = message_str.lower()
             if any(keyword in lower_message_str for keyword in self.error_keywords):
                 logger.warning(f"检测到错误文本，准备启动后台重试: '{message_str}'")
                 should_retry = True
-
+        
+        # 检查是否是真正的空回复（并且已经排除了tool_calls的情况）
         if not should_retry and is_truly_empty:
-            # 既然已经排除了 tool_calls 的情况，这里的空回复就是真正需要重试的空回复。
-            logger.warning("检测到最终回复为空，准备启动后台重试。")
+            logger.warning("检测到最终回复为空（非工具调用），准备启动后台重试。")
             should_retry = True
         
         if should_retry and event.message_str.strip():
             logger.info("创建后台重试任务，并立即阻止当前错误/空回复的发送。")
             
             prompt_to_retry = event.message_str
-            # 强制将会话ID转换为纯字符串，避免后台任务中出现上下文问题。
             session_id_to_use = str(event.unified_msg_origin)
             images_to_retry = [
                 comp.url
