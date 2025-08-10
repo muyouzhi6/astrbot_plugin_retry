@@ -144,14 +144,36 @@ class IntelligentRetry(Star):
         if self.max_attempts <= 0:
             return
 
+        should_retry = False
+        
         # [核心修正] 直接从事件对象获取最原始的LLM响应来进行判断
         _llm_response = getattr(event, 'llm_response', None)
         if _llm_response and hasattr(_llm_response, 'choices') and _llm_response.choices:
             finish_reason = getattr(_llm_response.choices[0], 'finish_reason', None)
-            # 如果是工具调用，这是正常中间步骤，插件绝不能干预
+            # 检查特殊的完成原因
             if finish_reason == 'tool_calls':
                 logger.debug("检测到正常的工具调用中间步骤，插件将不进行任何干预。")
                 return # **直接退出，让框架核心继续处理**
+            elif finish_reason == 'content_filter':
+                # 内容安全过滤也需要重试，但记录下来
+                logger.warning("检测到内容安全过滤，将尝试重试。")
+                should_retry = True
+            elif finish_reason == 'length':
+                # 长度超限是正常情况
+                pass
+            elif finish_reason == 'stop':
+                # 正常停止，检查是否有其他错误
+                pass
+            else:
+                # 其他未知的完成原因，可能需要重试
+                logger.warning(f"检测到未知的完成原因: {finish_reason}，将尝试重试")
+                should_retry = True
+        
+        # 获取原始错误信息（如果有）
+        raw_error = getattr(_llm_response, 'error', None)
+        if raw_error:
+            logger.debug(f"检测到原始错误信息: {raw_error}")
+            should_retry = True
 
         # --- 只有在不是 tool_calls 的情况下，才执行下面的错误/空回复检查 ---
         # 只对最终输出的空/错误回复触发重试
@@ -162,27 +184,41 @@ class IntelligentRetry(Star):
                 (isinstance(c, Comp.Plain) and c.text.strip()) or not isinstance(c, Comp.Plain)
                 for c in result.chain
             )
-
-        should_retry = False
         message_str = result.get_plain_text() if result else ""
 
         # 检查是否包含明确的错误关键词
         if message_str:
             lower_message_str = message_str.lower()
             
-            # 1. 检查是否包含任何已知的错误关键词
-            is_error = any(keyword in lower_message_str for keyword in self.error_keywords)
+            # 0. 某些情况需要特殊处理
+            rate_limit_reasons = [
+                "rate limit",  # API速率限制
+                "请降低请求频率"  # 自定义的频率限制消息
+            ]
             
-            # 2. 判断是否为典型的错误响应格式
-            is_error_format = (
-                ("错误类型:" in message_str and "错误信息:" in message_str) or
-                "astrbot 请求失败" in lower_message_str or
-                "请在控制台查看和分享错误详情" in message_str
-            )
+            if any(reason in lower_message_str for reason in rate_limit_reasons):
+                # 速率限制的情况，增加重试延迟
+                self.retry_delay = max(self.retry_delay * 2, 10)  # 最少10秒
+                logger.info(f"检测到速率限制，增加重试延迟到 {self.retry_delay} 秒")
+
+            # 1. 检查是否有明确的错误标识
+            error_indicators = {
+                "标准错误": ("错误类型:" in message_str and "错误信息:" in message_str),
+                "请求失败": "astrbot 请求失败" in lower_message_str,
+                "API错误": any(keyword in lower_message_str for keyword in self.error_keywords),
+                "控制台错误": "请在控制台查看和分享错误详情" in message_str,
+                # 补充常见的错误模式
+                "连接超时": "timeout" in lower_message_str,
+                "未知错误": "unknown error" in lower_message_str,
+                "异常": "exception" in lower_message_str
+            }
             
-            # 如果符合错误特征，就触发重试
-            if is_error and is_error_format:
-                logger.warning(f"检测到系统错误响应，准备启动后台重试: '{message_str}'")
+            # 检查是否命中任何错误标识
+            matched_errors = [name for name, condition in error_indicators.items() if condition]
+            
+            if matched_errors:
+                error_types = ", ".join(matched_errors)
+                logger.warning(f"检测到系统错误响应 [{error_types}]，准备启动后台重试: '{message_str}'")
                 should_retry = True
                 
         # 检查是否是真正的空回复（并且已经排除了tool_calls的情况）
