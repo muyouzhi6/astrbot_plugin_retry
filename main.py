@@ -126,15 +126,18 @@ class IntelligentRetry(Star):
                 await asyncio.sleep(self.retry_delay)
 
         logger.error(f"[Retry] 所有 {self.max_attempts} 次后台重试均失败，放弃该次回复。session: {session_str}")
-        # 可选：重试全部失败后，主动通知用户
+        failure_msg = f"很抱歉，AI 回复失败。已尝试重试 {self.max_attempts} 次但仍然失败，请稍后再试。"
+        # 重试失败后，尝试通知用户
         if session_str and session_str.count(":") == 2:
             try:
-                await self.context.send_message("很抱歉，AI 回复失败，请稍后再试。", session_str)
-                logger.info(f"[Retry] 已通知用户回复失败。session: {session_str}")
+                await self.context.send_message(failure_msg, session_str)
+                logger.info(f"[Retry] 已通知用户失败情况。session: {session_str}")
             except Exception as e:
-                logger.error(f"[Retry] 通知用户失败时发生异常: {e}，session: {session_str}", exc_info=True)
+                logger.error(f"[Retry] 尝试发送失败通知时发生异常: {e}，session: {session_str}", exc_info=True)
+                if "不合法的 session 字符串" in str(e):
+                    logger.error("[Retry] 检测到 session 字符串格式问题，这可能是由于会话状态已过期或无效")
         else:
-            logger.error(f"[Retry] session 字符串格式错误，无法发送失败通知: {session_str}")
+            logger.error(f"[Retry] session 字符串格式错误（需要包含两个冒号），无法发送失败通知: {session_str}")
 
     @filter.on_decorating_result(priority=-100)
     async def check_and_retry(self, event: AstrMessageEvent):
@@ -285,9 +288,22 @@ class IntelligentRetry(Star):
                     except Exception as e:
                         logger.error(f"[Retry] 转换 session 对象失败: {e}", exc_info=True)
             
-            if not session_to_use:
-                logger.error(f"[Retry] 无法获取或构建合法的 session。event: {event}")
-                return
+            # 严格检查 session 字符串的格式
+            if not session_to_use or session_to_use.count(":") != 2:
+                logger.error(f"[Retry] 无法获取或构建合法的 session（需要包含两个冒号）。event: {event}")
+                try:
+                    if hasattr(event, "message_type") and hasattr(event, "user_id") and event.message_type == "private":
+                        # 尝试最后一次用硬编码方式构建
+                        session_to_use = f"aiocqhttp:FriendMessage:{event.user_id}"
+                    elif hasattr(event, "message_type") and hasattr(event, "group_id") and event.message_type == "group":
+                        session_to_use = f"aiocqhttp:GroupMessage:{event.group_id}"
+                except:
+                    pass
+                
+                if not session_to_use or session_to_use.count(":") != 2:
+                    # 如果还是无法构建合法的 session，尝试告知用户
+                    logger.error("[Retry] 即使是最后的尝试也无法构建合法的 session，放弃重试")
+                    return
 
             images_to_retry = [
                 comp.url
