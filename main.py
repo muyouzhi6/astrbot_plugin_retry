@@ -109,8 +109,14 @@ class IntelligentRetry(Star):
                     if not new_text.strip():
                         logger.error(f"[Retry] 生成回复内容为空，放弃发送。session: {session_str}")
                         return
-                    # 确保 session 字符串格式正确并进行消息发送
-                    if session_str and session_str.count(":") == 2:
+                    
+                    # 确保 session 字符串格式正确
+                    parts = session_str.split(":")
+                    if len(parts) == 2:  # 如果只有两部分（type:id），自动添加平台前缀
+                        session_str = f"aiocqhttp:{session_str}"
+                        logger.debug(f"[Retry] 自动补充平台前缀，完整 session: {session_str}")
+                    
+                    if session_str.count(":") == 2:  # 重新检查完整性
                         await self.context.send_message(new_text, session_str)
                         logger.info(f"[Retry] 新回复已成功发送。session: {session_str}")
                         return
@@ -257,19 +263,15 @@ class IntelligentRetry(Star):
             
             # 2. 如果上面的方法失败，尝试从基本属性构建
             if not session_to_use:
-                platform = "aiocqhttp"  # AstrBot 默认平台
-                msg_type = "FriendMessage" if getattr(event, "message_type", "") == "private" else "GroupMessage"
-                raw_id = None
-                
-                # 按优先级尝试获取 ID
-                if hasattr(event, "user_id") and event.message_type == "private":
-                    raw_id = str(event.user_id)
-                elif hasattr(event, "group_id") and event.message_type == "group":
-                    raw_id = str(event.group_id)
-                
-                if raw_id:
-                    session_to_use = f"{platform}:{msg_type}:{raw_id}"
-                    logger.debug(f"[Retry] 成功构建 session 字符串: {session_to_use}")
+                # 优先从 session 属性获取会话类型和ID
+                if hasattr(event, "message_type") and hasattr(event, "session"):
+                    try:
+                        msg_type = "FriendMessage" if event.message_type == "private" else "GroupMessage"
+                        session_id = str(event.user_id) if event.message_type == "private" else str(event.group_id)
+                        session_to_use = f"{msg_type}:{session_id}"
+                        logger.debug(f"[Retry] 从会话属性构建 session: {session_to_use}")
+                    except Exception as e:
+                        logger.error(f"[Retry] 构建 session 字符串失败: {e}")
             
             # 3. 最后尝试从 session 属性获取
             if not session_to_use and hasattr(event, "session"):
