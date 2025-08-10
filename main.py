@@ -169,53 +169,36 @@ class IntelligentRetry(Star):
 
             prompt_to_retry = event.message_str
             
-            # 尝试直接获取或构建 session 字符串
-            session_id_to_use = None
+            # 尝试获取 session 对象
+            session_to_use = None
             
-            # 1. 尝试直接获取标准格式的 session
+            # 1. 直接从事件获取
             if hasattr(event, "session"):
-                session_id_to_use = event.session
-            # 2. 尝试从 user_id/group_id 构建
+                session_to_use = event.session
+                logger.debug(f"[Retry] 从事件获取到 session: {session_to_use}")
             else:
+                # 2. 使用标准的 session 构建方法
                 platform = "aiocqhttp"  # AstrBot 默认平台
-                msg_type = None
+                msg_type = "FriendMessage" if getattr(event, "message_type", "") == "private" else "GroupMessage"
+                
                 raw_id = None
-                
-                if hasattr(event, "message_type"):
-                    if event.message_type == "private":
-                        msg_type = "FriendMessage"
-                        raw_id = getattr(event, "user_id", None)
-                    elif event.message_type == "group":
-                        msg_type = "GroupMessage"
-                        raw_id = getattr(event, "group_id", None)
-                
-                # 如果上面都没取到，尝试其他属性
-                if not raw_id and hasattr(event, "unified_msg_origin"):
-                    # 如果 unified_msg_origin 已经是完整格式，直接使用
-                    if ":" in str(event.unified_msg_origin) and len(str(event.unified_msg_origin).split(":")) == 3:
-                        session_id_to_use = event.unified_msg_origin
-                    else:
-                        raw_id = event.unified_msg_origin
-                        if not msg_type:  # 如果之前没确定消息类型
-                            msg_type = "FriendMessage"  # 默认私聊
-                
-                # 如果有必要的信息就构建完整 session 字符串
-                if not session_id_to_use and platform and msg_type and raw_id:
-                    session_id_to_use = f"{platform}:{msg_type}:{raw_id}"
+                # 按优先级尝试获取 ID
+                if hasattr(event, "user_id") and event.message_type == "private":
+                    raw_id = event.user_id
+                elif hasattr(event, "group_id") and event.message_type == "group":
+                    raw_id = event.group_id
+                elif hasattr(event, "unified_msg_origin"):
+                    raw_id = event.unified_msg_origin
+
+                if raw_id:
+                    # 构建标准格式的 session 字符串
+                    session_to_use = f"{platform}:{msg_type}:{raw_id}"
+                    logger.debug(f"[Retry] 成功构建 session 字符串: {session_to_use}")
             
-            if not session_id_to_use:
-                logger.error(f"[Retry] 无法获取或构建合法的 session 字符串。event: {event}")
-                return
-                
-            # 确保 session 字符串格式正确
-            if len(str(session_id_to_use).split(":")) != 3:
-                logger.error(f"[Retry] 构建的 session 字符串格式不正确: {session_id_to_use}")
+            if not session_to_use:
+                logger.error(f"[Retry] 无法获取或构建合法的 session。event: {event}")
                 return
 
-            if not session_id_to_use:
-                logger.error(f"[Retry] 无法获取合法的 session 字符串，将放弃重试。event: {event}")
-                return
-                
             images_to_retry = [
                 comp.url
                 for comp in event.message_obj.message
@@ -227,14 +210,14 @@ class IntelligentRetry(Star):
             if provider and hasattr(provider, "func_tool"):
                 func_tool_to_retry = provider.func_tool
 
-            logger.debug(f"[Retry] 创建后台重试任务，session_id: {session_id_to_use}")
+            logger.debug(f"[Retry] 创建后台重试任务，session: {session_to_use}")
             asyncio.create_task(self._retry_task(
                 prompt_to_retry,
-                session_id_to_use,
+                session_to_use,
                 images_to_retry,
                 func_tool_to_retry 
             ))
-
+            
             event.clear_result()
             event.stop_event()
 
