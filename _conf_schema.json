@@ -33,7 +33,7 @@
     "description": "触发重试的错误关键词",
     "type": "text",
     "hint": "当LLM的回复中包含这些关键词时，将触发重试。请每行输入一个关键词，不区分大小写。",
-    "default": "api 返回的内容为空\n请求失败\nAPI 返回的 completion 由于内容安全过滤被拒绝(非 AstrBot)\n调用失败\n处理失败"
+    "default": "api 返回的内容为空\nAPI 返回的 completion 由于内容安全过滤被拒绝(非 AstrBot)"
   },
   "always_use_system_prompt": {
     "description": "强制使用Provider的人设覆盖上下文中的system消息",
