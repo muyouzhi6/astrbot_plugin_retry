@@ -5,6 +5,24 @@
     "hint": "当LLM回复无效时，插件将尝试重新请求的最大次数。设置为0则禁用重试。",
     "default": 3
   },
+  "log_context_preview": {
+    "description": "调试：在重试时输出最近 N 条上下文的简要预览",
+    "type": "bool",
+    "hint": "仅用于调试，输出内容为裁剪后的文本，避免泄露过多信息。",
+    "default": false
+  },
+  "context_preview_last_n": {
+    "description": "上下文预览的条目数",
+    "type": "int",
+    "hint": "仅在启用上下文预览时生效，表示显示最近 N 条历史。",
+    "default": 3
+  },
+  "context_preview_max_chars": {
+    "description": "单条预览的最大字符数",
+    "type": "int",
+    "hint": "仅在启用上下文预览时生效，用于裁剪每条预览文本长度。",
+    "default": 120
+  },
   "retry_delay": {
     "description": "重试间隔（秒）",
     "type": "int",
