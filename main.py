@@ -12,7 +12,7 @@ from astrbot.api.star import Context, Star, register
     "intelligent_retry",
     "木有知 & 长安某",
     "当LLM回复为空或包含特定错误关键词时，自动进行多次重试，保持完整上下文和人设",
-    "2.6.1"
+    "2.6.2"
 )
 class IntelligentRetry(Star):
     """
@@ -21,6 +21,7 @@ class IntelligentRetry(Star):
     V2.5.0: 修复了上下文丢失和人设不一致的问题，确保重试时保持完全相同的对话环境。
     V2.6.0: 新增按HTTP状态码决定是否重试的能力（可配置白/黑名单，默认允许400/429/502/503/504）。
     V2.6.1: 新增 always_use_system_prompt 配置，允许在重试时强制覆盖上下文中的 system 消息，统一使用 Provider 的 system_prompt，避免被异常/污染的人设影响。
+    V2.6.2: 增加 fallback_system_prompt，当 Provider 未提供人设时可由插件配置提供备用人设，仍可强制覆盖上下文中的 system 消息。
     """
 
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -30,9 +31,11 @@ class IntelligentRetry(Star):
         default_keywords = "api 返回的内容为空\nAPI 返回的 completion 由于内容安全过滤被拒绝(非 AstrBot)\n调用失败"
         keywords_str = config.get('error_keywords', default_keywords)
         self.error_keywords = [k.strip().lower() for k in keywords_str.split('\n') if k.strip()]
-        # 是否在重试时强制使用 Provider 的 system_prompt，覆盖上下文中的任意 system 消息
-        # 目的：规避极端情况下上下文携带异常/污染的 system 信息导致人格“错乱”
-        self.always_use_system_prompt = config.get('always_use_system_prompt', True)
+    # 是否在重试时强制使用 Provider 的 system_prompt，覆盖上下文中的任意 system 消息
+    # 目的：规避极端情况下上下文携带异常/污染的 system 信息导致人格“错乱”
+    self.always_use_system_prompt = config.get('always_use_system_prompt', True)
+    # 备用人设文本：当 Provider 未提供 system_prompt 且开启了强制人设时，使用此文本作为人设
+    self.fallback_system_prompt_text = config.get('fallback_system_prompt', '').strip()
 
         # 基于状态码的重试控制：
         # - retryable_status_codes    命中这些状态码时允许进入重试。
@@ -60,7 +63,7 @@ class IntelligentRetry(Star):
         self.fallback_reply = config.get('fallback_reply', "抱歉，刚才遇到服务波动，我已自动为你重试多次仍未成功。请稍后再试或换个说法。")
         
         logger.info(
-            f"已加载 [IntelligentRetry] 插件 v2.6.1, "
+            f"已加载 [IntelligentRetry] 插件 v2.6.2, "
             f"将在LLM回复无效时自动重试 (最多 {self.max_attempts} 次)，保持完整上下文和人设。"
         )
 
@@ -143,6 +146,11 @@ class IntelligentRetry(Star):
 
             # 若开启强制人设，且 Provider 提供了 system_prompt，则移除上下文中的所有 system 消息并强制注入
             if self.always_use_system_prompt:
+                # 若 Provider 无人设而插件提供了备用人设，则使用备用人设
+                if (not system_prompt) and self.fallback_system_prompt_text:
+                    system_prompt = self.fallback_system_prompt_text
+                    logger.debug("Provider 未提供 system_prompt，已启用插件的 fallback_system_prompt 作为人设")
+
                 if system_prompt:
                     original_len = len(context_history)
                     removed = 0
