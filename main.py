@@ -26,27 +26,23 @@ class IntelligentRetry(Star):
 
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
+        # 基础配置
         self.max_attempts = config.get('max_attempts', 3)
         self.retry_delay = config.get('retry_delay', 2)
         default_keywords = "api 返回的内容为空\nAPI 返回的 completion 由于内容安全过滤被拒绝(非 AstrBot)\n调用失败"
         keywords_str = config.get('error_keywords', default_keywords)
         self.error_keywords = [k.strip().lower() for k in keywords_str.split('\n') if k.strip()]
-    # 是否在重试时强制使用 Provider 的 system_prompt，覆盖上下文中的任意 system 消息
-    # 目的：规避极端情况下上下文携带异常/污染的 system 信息导致人格“错乱”
-    self.always_use_system_prompt = config.get('always_use_system_prompt', True)
-    # 备用人设文本：当 Provider 未提供 system_prompt 且开启了强制人设时，使用此文本作为人设
-    self.fallback_system_prompt_text = config.get('fallback_system_prompt', '').strip()
 
-        # 基于状态码的重试控制：
-        # - retryable_status_codes    命中这些状态码时允许进入重试。
-        # - non_retryable_status_codes 命中这些状态码时直接跳过重试（最高优先级）。
-        # 说明：我们是从“错误文本”中解析状态码（4xx/5xx），具体取决于上游 Provider 如何返回错误信息；
-        #      若文本里没有状态码，仍会走关键词等其它判定逻辑。
-        # 默认将 400 納入可重试集合，以适配“多 Key 轮询”的场景（不同 Key 可能成功）。
+        # 人设控制
+        self.always_use_system_prompt = config.get('always_use_system_prompt', True)
+        self.fallback_system_prompt_text = config.get('fallback_system_prompt', '').strip()
+
+        # 基于状态码的重试控制
         retryable_codes_default = "400\n429\n502\n503\n504"
         non_retryable_codes_default = ""
         retryable_codes_str = config.get('retryable_status_codes', retryable_codes_default)
         non_retryable_codes_str = config.get('non_retryable_status_codes', non_retryable_codes_default)
+
         def _parse_codes(s: str):
             codes = set()
             for line in s.split('\n'):
@@ -57,11 +53,13 @@ class IntelligentRetry(Star):
                     except Exception:
                         pass
             return codes
+
         self.retryable_status_codes = _parse_codes(retryable_codes_str)
         self.non_retryable_status_codes = _parse_codes(non_retryable_codes_str)
-        # 兜底回复（可选）
+
+        # 兜底回复
         self.fallback_reply = config.get('fallback_reply', "抱歉，刚才遇到服务波动，我已自动为你重试多次仍未成功。请稍后再试或换个说法。")
-        
+
         logger.info(
             f"已加载 [IntelligentRetry] 插件 v2.6.2, "
             f"将在LLM回复无效时自动重试 (最多 {self.max_attempts} 次)，保持完整上下文和人设。"
