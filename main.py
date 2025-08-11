@@ -12,7 +12,7 @@ from astrbot.api.star import Context, Star, register
     "intelligent_retry",
     "木有知 & 长安某",
     "当LLM回复为空或包含特定错误关键词时，自动进行多次重试，保持完整上下文和人设",
-    "2.6.2"
+    "2.6.3"
 )
 class IntelligentRetry(Star):
     """
@@ -22,6 +22,7 @@ class IntelligentRetry(Star):
     V2.6.0: 新增按HTTP状态码决定是否重试的能力（可配置白/黑名单，默认允许400/429/502/503/504）。
     V2.6.1: 新增 always_use_system_prompt 配置，允许在重试时强制覆盖上下文中的 system 消息，统一使用 Provider 的 system_prompt，避免被异常/污染的人设影响。
     V2.6.2: 增加 fallback_system_prompt，当 Provider 未提供人设时可由插件配置提供备用人设，仍可强制覆盖上下文中的 system 消息。
+    V2.6.3: 可选输出最近 N 条上下文的预览日志，便于核对上下文是否带入（仅 DEBUG 级别）。
     """
 
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -57,11 +58,22 @@ class IntelligentRetry(Star):
         self.retryable_status_codes = _parse_codes(retryable_codes_str)
         self.non_retryable_status_codes = _parse_codes(non_retryable_codes_str)
 
+        # 上下文预览日志（仅用于调试）
+        self.log_context_preview = bool(config.get('log_context_preview', False))
+        try:
+            self.context_preview_last_n = max(0, int(config.get('context_preview_last_n', 3)))
+        except Exception:
+            self.context_preview_last_n = 3
+        try:
+            self.context_preview_max_chars = max(20, int(config.get('context_preview_max_chars', 120)))
+        except Exception:
+            self.context_preview_max_chars = 120
+
         # 兜底回复
         self.fallback_reply = config.get('fallback_reply', "抱歉，刚才遇到服务波动，我已自动为你重试多次仍未成功。请稍后再试或换个说法。")
 
         logger.info(
-            f"已加载 [IntelligentRetry] 插件 v2.6.2, "
+            f"已加载 [IntelligentRetry] 插件 v2.6.3, "
             f"将在LLM回复无效时自动重试 (最多 {self.max_attempts} 次)，保持完整上下文和人设。"
         )
 
@@ -141,6 +153,31 @@ class IntelligentRetry(Star):
                 f"上下文长度: {len(context_history)}, 系统提示词存在: {system_prompt is not None}, "
                 f"上下文含system: {has_system_in_contexts}{'，示例: '+sys_preview if has_system_in_contexts and sys_preview else ''}"
             )
+
+            # 可选：输出最近 N 条上下文预览（仅 DEBUG 日志，避免泄露过多内容）
+            if self.log_context_preview and context_history and self.context_preview_last_n > 0:
+                try:
+                    tail = context_history[-self.context_preview_last_n:]
+                    preview_lines = []
+                    for idx, m in enumerate(tail, 1):
+                        if isinstance(m, dict):
+                            role = str(m.get('role', ''))
+                            content = m.get('content', '')
+                        else:
+                            role = ''
+                            content = str(m)
+                        try:
+                            text = str(content)
+                        except Exception:
+                            text = '<non-text-content>'
+                        text = text.replace('\n', ' ')
+                        if len(text) > self.context_preview_max_chars:
+                            text = text[:self.context_preview_max_chars] + '…'
+                        preview_lines.append(f"#{idx} [{role}] {text}")
+                    logger.debug("上下文预览(最近 %d 条):\n%s" % (self.context_preview_last_n, "\n".join(preview_lines)))
+                except Exception as _:
+                    # 预览失败不影响主流程
+                    pass
 
             # 若开启强制人设，且 Provider 提供了 system_prompt，则移除上下文中的所有 system 消息并强制注入
             if self.always_use_system_prompt:
