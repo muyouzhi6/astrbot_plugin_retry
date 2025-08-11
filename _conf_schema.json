@@ -17,6 +17,18 @@
     "hint": "当LLM的回复中包含这些关键词时，将触发重试。请每行输入一个关键词，不区分大小写。",
     "default": "api 返回的内容为空\n请求失败\nAPI 返回的 completion 由于内容安全过滤被拒绝(非 AstrBot)\n调用失败\n处理失败"
   },
+  "retryable_status_codes": {
+    "description": "允许重试的HTTP状态码(每行一个)",
+    "type": "text",
+    "hint": "当错误文本中包含这些状态码时，允许进入重试流程。支持 400/429/502/503/504 等。",
+    "default": "400\n429\n502\n503\n504"
+  },
+  "non_retryable_status_codes": {
+    "description": "禁止重试的HTTP状态码(每行一个)",
+    "type": "text",
+    "hint": "当错误文本中包含这些状态码时，将直接跳过重试。留空表示不限制。",
+    "default": ""
+  },
   "fallback_reply": {
     "description": "重试全部失败时的兜底回复",
     "type": "text",
