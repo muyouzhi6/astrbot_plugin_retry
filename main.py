@@ -12,13 +12,14 @@ from astrbot.api.star import Context, Star, register
     "intelligent_retry",
     "木有知 & 长安某",
     "当LLM回复为空或包含特定错误关键词时，自动进行多次重试，保持完整上下文和人设",
-    "2.5.0"
+    "2.6.0"
 )
 class IntelligentRetry(Star):
     """
     一个AstrBot插件，在检测到LLM回复为空或返回包含特定关键词的错误文本时，
     自动进行多次重试，并完整保持原有的上下文和人设。
     V2.5.0: 修复了上下文丢失和人设不一致的问题，确保重试时保持完全相同的对话环境。
+    V2.6.0: 新增按HTTP状态码决定是否重试的能力（可配置白/黑名单，默认允许400/429/502/503/504）。
     """
 
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -54,7 +55,7 @@ class IntelligentRetry(Star):
         self.fallback_reply = config.get('fallback_reply', "抱歉，刚才遇到服务波动，我已自动为你重试多次仍未成功。请稍后再试或换个说法。")
         
         logger.info(
-            f"已加载 [IntelligentRetry] 插件 v2.5.0, "
+            f"已加载 [IntelligentRetry] 插件 v2.6.0, "
             f"将在LLM回复无效时自动重试 (最多 {self.max_attempts} 次)，保持完整上下文和人设。"
         )
 
