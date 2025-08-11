@@ -35,6 +35,12 @@
     "hint": "当错误文本中包含这些状态码时，将直接跳过重试。留空表示不限制。",
     "default": ""
   },
+  "fallback_system_prompt": {
+    "description": "备用人设(system prompt)",
+    "type": "text",
+    "hint": "当 Provider 未提供 system_prompt 且开启了“强制使用Provider人设”时，使用此文本作为人设。可留空。",
+    "default": ""
+  },
   "fallback_reply": {
     "description": "重试全部失败时的兜底回复",
     "type": "text",
