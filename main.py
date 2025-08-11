@@ -12,7 +12,7 @@ from astrbot.api.star import Context, Star, register
     "intelligent_retry",
     "木有知 & 长安某",
     "当LLM回复为空或包含特定错误关键词时，自动进行多次重试，保持完整上下文和人设",
-    "2.6.0"
+    "2.6.1"
 )
 class IntelligentRetry(Star):
     """
@@ -20,6 +20,7 @@ class IntelligentRetry(Star):
     自动进行多次重试，并完整保持原有的上下文和人设。
     V2.5.0: 修复了上下文丢失和人设不一致的问题，确保重试时保持完全相同的对话环境。
     V2.6.0: 新增按HTTP状态码决定是否重试的能力（可配置白/黑名单，默认允许400/429/502/503/504）。
+    V2.6.1: 新增 always_use_system_prompt 配置，允许在重试时强制覆盖上下文中的 system 消息，统一使用 Provider 的 system_prompt，避免被异常/污染的人设影响。
     """
 
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -29,12 +30,16 @@ class IntelligentRetry(Star):
         default_keywords = "api 返回的内容为空\nAPI 返回的 completion 由于内容安全过滤被拒绝(非 AstrBot)\n调用失败"
         keywords_str = config.get('error_keywords', default_keywords)
         self.error_keywords = [k.strip().lower() for k in keywords_str.split('\n') if k.strip()]
-    # 基于状态码的重试控制：
-    # - retryable_status_codes    命中这些状态码时允许进入重试。
-    # - non_retryable_status_codes 命中这些状态码时直接跳过重试（最高优先级）。
-    # 说明：我们是从“错误文本”中解析状态码（4xx/5xx），具体取决于上游 Provider 如何返回错误信息；
-    #      若文本里没有状态码，仍会走关键词等其它判定逻辑。
-    # 默认将 400 納入可重试集合，以适配“多 Key 轮询”的场景（不同 Key 可能成功）。
+        # 是否在重试时强制使用 Provider 的 system_prompt，覆盖上下文中的任意 system 消息
+        # 目的：规避极端情况下上下文携带异常/污染的 system 信息导致人格“错乱”
+        self.always_use_system_prompt = config.get('always_use_system_prompt', True)
+
+        # 基于状态码的重试控制：
+        # - retryable_status_codes    命中这些状态码时允许进入重试。
+        # - non_retryable_status_codes 命中这些状态码时直接跳过重试（最高优先级）。
+        # 说明：我们是从“错误文本”中解析状态码（4xx/5xx），具体取决于上游 Provider 如何返回错误信息；
+        #      若文本里没有状态码，仍会走关键词等其它判定逻辑。
+        # 默认将 400 納入可重试集合，以适配“多 Key 轮询”的场景（不同 Key 可能成功）。
         retryable_codes_default = "400\n429\n502\n503\n504"
         non_retryable_codes_default = ""
         retryable_codes_str = config.get('retryable_status_codes', retryable_codes_default)
@@ -55,7 +60,7 @@ class IntelligentRetry(Star):
         self.fallback_reply = config.get('fallback_reply', "抱歉，刚才遇到服务波动，我已自动为你重试多次仍未成功。请稍后再试或换个说法。")
         
         logger.info(
-            f"已加载 [IntelligentRetry] 插件 v2.6.0, "
+            f"已加载 [IntelligentRetry] 插件 v2.6.1, "
             f"将在LLM回复无效时自动重试 (最多 {self.max_attempts} 次)，保持完整上下文和人设。"
         )
 
@@ -111,7 +116,7 @@ class IntelligentRetry(Star):
         try:
             # 获取完整的对话上下文
             context_history = await self._get_complete_context(event.unified_msg_origin)
-            # 判断上下文中是否已经包含 system 消息
+            # 判断上下文中是否已经包含 system 消息（仅用于记录与决策）
             has_system_in_contexts = False
             sys_preview = ""
             try:
@@ -135,6 +140,25 @@ class IntelligentRetry(Star):
                 f"上下文长度: {len(context_history)}, 系统提示词存在: {system_prompt is not None}, "
                 f"上下文含system: {has_system_in_contexts}{'，示例: '+sys_preview if has_system_in_contexts and sys_preview else ''}"
             )
+
+            # 若开启强制人设，且 Provider 提供了 system_prompt，则移除上下文中的所有 system 消息并强制注入
+            if self.always_use_system_prompt:
+                if system_prompt:
+                    original_len = len(context_history)
+                    removed = 0
+                    filtered = []
+                    for m in context_history:
+                        if isinstance(m, dict) and str(m.get('role', '')).lower() == 'system':
+                            removed += 1
+                            continue
+                        filtered.append(m)
+                    if removed > 0:
+                        logger.debug(f"已强制覆盖人设：移除 {removed} 条历史 system 消息")
+                    context_history = filtered
+                    # 更新 has_system_in_contexts 标记仅用于后续日志/决策
+                    has_system_in_contexts = False
+                else:
+                    logger.warning("配置了 always_use_system_prompt，但 Provider 未提供 system_prompt，已回退为上下文判断模式")
             
             # 使用完整的参数进行重试
             kwargs = {
@@ -143,8 +167,11 @@ class IntelligentRetry(Star):
                 'image_urls': image_urls,
                 'func_tool': func_tool,
             }
-            # 仅当上下文没有 system 消息时，才额外传递 provider 的 system_prompt
-            if not has_system_in_contexts and system_prompt:
+            # 强制人设：无条件传入 Provider 的 system_prompt
+            if self.always_use_system_prompt and system_prompt:
+                kwargs['system_prompt'] = system_prompt
+            # 非强制：仅当上下文没有 system 消息时，额外传入 Provider 的 system_prompt
+            elif not self.always_use_system_prompt and (not has_system_in_contexts) and system_prompt:
                 kwargs['system_prompt'] = system_prompt
 
             llm_response = await provider.text_chat(**kwargs)
