@@ -1,20 +1,21 @@
-# AstrBot 智能重试插件 (Intelligent Retry) v2.8.0
+# AstrBot 智能重试插件 (Intelligent Retry) v2.8.1
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/Version-2.8.0-blue.svg)](https://github.com/muyouzhi6/astrabot_plugin_retry)
+[![Version](https://img.shields.io/badge/Version-2.8.1-blue.svg)](https://github.com/muyouzhi6/astrabot_plugin_retry)
 [![AstrBot](https://img.shields.io/badge/AstrBot-Compatible-green.svg)](https://github.com/AstrBotDevs/AstrBot)
 
 一个为 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 设计的智能重试插件，专门解决与大语言模型（LLM）交互时的不稳定问题。当 LLM 响应为空、出现特定错误或状态码时，会自动检测并智能重试，让您的对话体验更加流畅。
 
-**🎉 v2.8.0 重大更新**：大幅优化默认配置，涵盖更多实际使用场景，界面体验全面升级！
+**🔥 v2.8.1 新增功能**：智能截断检测，专门解决Gemini等LLM的"话说一半没了"问题！
 
 ## ✨ 核心特性
 
 ### 🎯 智能检测与重试
 - **空回复检测**：自动检测并重试空的LLM响应
+- **🆕 截断检测**：检测Gemini等LLM的回复截断问题，包括句子不完整、代码块未闭合、列表截断等
 - **错误关键词匹配**：支持11种常见错误关键词，包括APITimeoutError、语音转换失败等
 - **HTTP状态码识别**：智能处理429/500/502/503/504/524等服务器错误
-- **优先级策略**：禁止重试 > 允许重试 > 错误关键词
+- **优先级策略**：禁止重试 > 允许重试 > 错误关键词 > 截断检测
 
 ### 🛡️ 安全与稳定
 - **LLM响应验证**：只处理真正的LLM响应，不会误判正常空消息
@@ -44,9 +45,70 @@ git clone https://github.com/muyouzhi6/astrabot_plugin_retry.git
 
 安装完成后重启 AstrBot 即可。
 
+## 🔍 v2.8.1 新增：智能截断检测
+
+### 问题背景
+Gemini等LLM在处理长文本时经常会"话说一半没了"，即回复突然截断。这通常发生在：
+- 回复长度接近token限制时
+- 服务器负载较高时
+- 网络传输不稳定时
+
+### 检测机制
+
+#### 1. 双重检测策略
+- **API层检测**：监控`finish_reason='length'`标识
+- **内容层检测**：分析文本内容的完整性
+
+#### 2. 多维度内容分析
+
+##### 📝 句子完整性
+```
+✅ 正常：机器学习是一种人工智能技术。
+❌ 截断：机器学习是一种人工智能的分支，它通过算法来
+```
+
+##### 🔧 代码块完整性
+```python
+❌ 截断检测：
+```python
+def hello():
+    print("world")
+# 缺少闭合的```
+```
+
+##### 📋 列表完整性
+```
+❌ 截断检测：
+1. 第一个要点
+2. 第二个要点  
+3. 
+```
+
+##### 🎯 省略号模式
+```
+❌ 截断检测：
+这是一个回复...
+或者：这是回复【...】
+```
+
+### 使用效果
+
+**之前的体验：**
+```
+用户：详细解释机器学习
+AI：机器学习是一种让计算机通过数据学习
+```
+
+**现在的体验：**
+```
+用户：详细解释机器学习
+AI：[检测到截断，自动重试...]
+AI：机器学习是一种让计算机通过数据学习和改善性能的方法，它包括监督学习、无监督学习和强化学习三个主要分支...
+```
+
 ## ⚙️ 配置说明
 
-**✨ v2.8.0 优化了所有配置项，提供更友好的界面和更实用的默认值**
+**✨ v2.8.1 完全向下兼容，无需额外配置即可享受截断检测功能**
 
 所有配置均可在 **AstrBot WebUI → 插件管理 → Intelligent Retry → 配置** 中进行设置：
 
