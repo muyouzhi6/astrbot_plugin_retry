@@ -178,7 +178,7 @@ API 返回的 completion 由于内容安全过滤被拒绝(非 AstrBot)
 ## ✍️ 作者
 
 - 木有知 [@muyouzhi6](https://github.com/muyouzhi6)
-- 长安某 [@ChanganZhou](https://github.com/ChanganZhou)
+- 长安某 
 
 ---
 
