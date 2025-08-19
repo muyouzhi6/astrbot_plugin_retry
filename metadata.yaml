@@ -2,13 +2,13 @@
 name: intelligent_retry
 
 # 插件的简短描述，会显示在插件市场列表页
-desc: 当LLM回复为空或包含特定错误关键词/可配置状态码时，自动重试并保持原有上下文与人设；支持指数退避、状态码白/黑名单与失败兜底。
+desc: 【配置优化版v2.8.0】当LLM回复为空或包含特定错误关键词/状态码时自动重试。新增优化的默认配置，涵盖APITimeoutError、语音转换失败等常见场景，界面提示更友好。
 
 # 插件版本号，请遵循 "主版本.次版本.修订号" 格式
-version: 2.6.3
+version: "2.8.0"
 
 # 插件作者
 author: 木有知 & 长安某
 
 # 插件的 Git 仓库地址
-repo: https://github.com/muyouzhi6/astrabot_plugin_retry # 请确保这是你最终的仓库地址
+repo: https://github.com/muyouzhi6/astrabot_plugin_retry
