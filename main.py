@@ -196,6 +196,35 @@ class IntelligentRetry(Star):
                 
         return filtered, removed
 
+    def _set_fallback_response(self, response) -> None:
+        """设置兜底回复"""
+        try:
+            # 使用兼容性方式创建Plain组件
+            try:
+                from astrbot.api.message_components import Plain
+            except:
+                # 兼容模式：创建简单的Plain类
+                class Plain:
+                    def __init__(self, text):
+                        self.text = text
+                        self.type = 'Plain'
+                        self.convert = True
+            
+            # 创建兜底回复的消息组件
+            fallback_chain = type('MessageChain', (), {
+                'chain': [Plain(text=self.fallback_reply)]
+            })()
+            
+            # 替换response内容
+            if hasattr(response, 'result_chain'):
+                response.result_chain = fallback_chain
+                print(f"[重试插件] 📝 已设置兜底回复: '{self.fallback_reply[:50]}...'")
+            else:
+                print("[重试插件] ⚠️ 无法设置兜底回复：response格式不支持")
+                
+        except Exception as e:
+            print(f"[重试插件] ❌ 设置兜底回复失败: {e}")
+
     async def _perform_retry_with_context(self, event: Any) -> Optional[Any]:
         """执行重试，完整保持原有上下文和人设"""
         provider, system_prompt, func_tool = await self._get_provider_config()
@@ -445,7 +474,8 @@ class IntelligentRetry(Star):
                             continue
                         else:
                             print(f"[重试插件] ❌ 已达到最大重试次数 ({self.max_attempts})，全部重试失败")
-                            # 不替换response，保持原样，让系统处理
+                            # 使用兜底回复替换无效response
+                            self._set_fallback_response(response)
                             break
                     else:
                         print(f"[重试插件] ✅ 第 {attempt} 次重试真正成功: '{retry_text[:50]}...' (长度:{len(retry_text)})")
