@@ -13,15 +13,15 @@ from astrbot.api.star import Context, Star, register
 @register(
     "intelligent_retry",
     "木有知 & 长安某",
-    "当LLM回复为空或包含特定错误关键词时，自动进行多次重试，保持完整上下文和人设。V2.8.2新增增强截断检测功能",
-    "2.8.2"
+    "当LLM回复为空或包含特定错误关键词时，自动进行多次重试，保持完整上下文和人设。V2.9新增增强截断检测功能",
+    "2.9"
 )
 class IntelligentRetry(Star):
     """
     一个AstrBot插件，在检测到LLM回复为空或返回包含特定关键词的错误文本时，
     自动进行多次重试，并完整保持原有的上下文和人设。
     
-    V2.8.2: 增强截断检测版本：
+    V2.9: 增强截断检测版本：
     - 🚀 革命性改进：解决"必须巧合截断到特定词汇才能重试"的问题
     - 📈 截断检测覆盖率从30%提升到70%，准确率保持90%
     - 🎯 新增100+种明显截断模式检测（连接词、标点、结构不完整）
@@ -511,5 +511,173 @@ class IntelligentRetry(Star):
         
         # ===== 其他情况默认为"可能截断"，激进重试 =====
         return False
+
+    @filter("llm")
+    async def handle_llm_response(self, event: AstrMessageEvent) -> bool:
+        """
+        🎯 处理LLM响应事件，检测并重试无效回复
+        
+        监听所有LLM调用的结果，当检测到以下情况时自动重试：
+        1. 空回复或纯空白回复
+        2. 包含特定错误关键词的回复
+        3. 被截断的回复（使用激进算法v4.1）
+        4. HTTP错误状态码（可重试类型）
+        
+        保持完整的上下文和人设进行重试
+        """
+        try:
+            # 验证是否为LLM调用事件
+            if not hasattr(event, 'call_llm') or not event.call_llm:
+                return True  # 不是LLM调用，跳过处理
+            
+            # 获取LLM响应
+            if not hasattr(event, 'llm_result') or not event.llm_result:
+                logger.debug("事件没有LLM响应数据，跳过重试检查")
+                return True
+            
+            llm_result = event.llm_result
+            
+            # 提取回复文本
+            reply_text = ""
+            if hasattr(llm_result, 'result_chain') and llm_result.result_chain:
+                from astrbot.api.message_components import Plain
+                for comp in llm_result.result_chain.chain:
+                    if isinstance(comp, Plain) and comp.text:
+                        reply_text += comp.text
+            
+            # 提取原始LLM响应对象
+            raw_completion = None
+            if hasattr(llm_result, 'raw_completion'):
+                raw_completion = llm_result.raw_completion
+            
+            # 检查是否需要重试
+            should_retry = self._should_retry(reply_text, raw_completion)
+            
+            if should_retry:
+                logger.info(f"🔄 检测到无效回复，开始重试流程...")
+                logger.debug(f"回复内容: '{reply_text[:100]}{'...' if len(reply_text) > 100 else ''}'")
+                
+                # 执行重试
+                success = await self._retry_with_attempts(event, reply_text)
+                
+                if not success:
+                    # 重试失败，发送兜底回复
+                    logger.warning("所有重试尝试均失败，发送兜底回复")
+                    await self._send_fallback_reply(event)
+                
+                return False  # 阻止继续处理原始无效回复
+            
+            return True  # 回复正常，继续处理
+            
+        except Exception as e:
+            logger.error(f"重试插件处理事件时发生错误: {e}")
+            return True  # 出错时不阻止原流程
+
+    def _should_retry(self, text: str, llm_response=None) -> bool:
+        """
+        🎯 判断是否需要重试
+        
+        检查顺序：
+        1. 空回复检查
+        2. 错误关键词检查  
+        3. HTTP状态码检查
+        4. 截断检测（激进算法）
+        """
+        # 1. 空回复检查
+        if not text or not text.strip():
+            logger.debug("检测到空回复，需要重试")
+            return True
+        
+        text_lower = text.lower().strip()
+        
+        # 2. 错误关键词检查
+        for keyword in self.error_keywords:
+            if keyword in text_lower:
+                logger.debug(f"检测到错误关键词: '{keyword}'，需要重试")
+                return True
+        
+        # 3. HTTP状态码检查
+        status_code = self._extract_status_code(text)
+        if status_code:
+            if status_code in self.retryable_status_codes:
+                logger.debug(f"检测到可重试状态码: {status_code}，需要重试")
+                return True
+            elif status_code in self.non_retryable_status_codes:
+                logger.debug(f"检测到不可重试状态码: {status_code}，跳过重试")
+                return False
+        
+        # 4. 截断检测（激进算法v4.1）
+        if self._detect_truncation(text, llm_response):
+            logger.debug("检测到回复截断，需要重试")
+            return True
+        
+        return False
+
+    async def _retry_with_attempts(self, event: AstrMessageEvent, original_text: str) -> bool:
+        """
+        🔄 执行多次重试尝试
+        """
+        for attempt in range(1, self.max_attempts + 1):
+            try:
+                logger.info(f"🔄 执行第 {attempt}/{self.max_attempts} 次重试...")
+                
+                # 延迟重试
+                if attempt > 1:
+                    delay = min(self.retry_delay * (attempt - 1), self.MAX_RETRY_DELAY)
+                    logger.debug(f"等待 {delay} 秒后重试...")
+                    await asyncio.sleep(delay)
+                
+                # 执行重试
+                retry_result = await self._perform_retry_with_context(event)
+                
+                if retry_result:
+                    # 提取重试结果文本
+                    retry_text = ""
+                    if hasattr(retry_result, 'result_chain') and retry_result.result_chain:
+                        from astrbot.api.message_components import Plain
+                        for comp in retry_result.result_chain.chain:
+                            if isinstance(comp, Plain) and comp.text:
+                                retry_text += comp.text
+                    
+                    # 检查重试结果是否有效
+                    if not self._should_retry(retry_text, getattr(retry_result, 'raw_completion', None)):
+                        logger.info(f"✅ 第 {attempt} 次重试成功！")
+                        
+                        # 更新事件的LLM结果
+                        event.llm_result = retry_result
+                        return True
+                    else:
+                        logger.warning(f"❌ 第 {attempt} 次重试仍然无效")
+                else:
+                    logger.warning(f"❌ 第 {attempt} 次重试调用失败")
+                    
+            except Exception as e:
+                logger.error(f"第 {attempt} 次重试时发生错误: {e}")
+        
+        logger.error(f"所有 {self.max_attempts} 次重试均失败")
+        return False
+
+    async def _send_fallback_reply(self, event: AstrMessageEvent):
+        """
+        📢 发送兜底回复
+        """
+        try:
+            from astrbot.api.message_components import Plain
+            from astrbot.core.message.message_builder import MessageBuilder
+            
+            # 构建兜底消息
+            fallback_chain = MessageBuilder().plain(self.fallback_reply).build()
+            
+            # 更新事件结果
+            class FallbackResult:
+                def __init__(self, chain):
+                    self.result_chain = chain
+                    self.raw_completion = None
+            
+            event.llm_result = FallbackResult(fallback_chain)
+            logger.info("已发送兜底回复")
+            
+        except Exception as e:
+            logger.error(f"发送兜底回复时发生错误: {e}")
 
 # --- END OF FILE main.py ---
