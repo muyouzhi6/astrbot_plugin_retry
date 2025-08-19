@@ -13,13 +13,24 @@ from astrbot.api.star import Context, Star, register
 @register(
     "intelligent_retry",
     "木有知 & 长安某",
-    "当LLM回复为空或包含特定错误关键词时，自动进行多次重试，保持完整上下文和人设",
-    "2.8.0"
+    "当LLM回复为空或包含特定错误关键词时，自动进行多次重试，保持完整上下文和人设。V2.8.1新增Gemini截断检测功能",
+    "2.8.1"
 )
 class IntelligentRetry(Star):
     """
     一个AstrBot插件，在检测到LLM回复为空或返回包含特定关键词的错误文本时，
     自动进行多次重试，并完整保持原有的上下文和人设。
+    
+    V2.8.1: Gemini截断检测版本：
+    - 新增智能截断检测功能，特别针对Gemini等LLM的回复截断问题
+    - 支持检测句子不完整、代码块未关闭、列表截断等多种截断模式
+    - 基于finish_reason='length'和内容模式分析的双重检测机制
+    - 与现有错误关键词和状态码检测无缝集成
+    
+    V2.8.0: 默认配置优化版本：
+    - 优化默认错误关键词配置（11种错误类型全覆盖）
+    - 增强HTTP状态码默认配置（可重试vs不可重试智能分类）
+    - 改进配置UI描述和用户体验
     
     V2.7.2: 严重Bug修复版本 - 解决误判正常空消息问题：
     - 修复插件误将AstrBot正常运行中的空消息当作LLM错误进行重试
@@ -56,8 +67,19 @@ class IntelligentRetry(Star):
             'retry_delay', 0.1, 60.0, self.DEFAULT_RETRY_DELAY
         )
         
-        # 错误关键词处理
-        default_keywords = "api 返回的内容为空\nAPI 返回的 completion 由于内容安全过滤被拒绝(非 AstrBot)\n调用失败"
+        # 错误关键词处理 - 更新为用户提供的完整列表
+        default_keywords = ("api 返回的内容为空\n"
+                           "API 返回的内容为空\n"
+                           "APITimeoutError\n"
+                           "错误类型: Exception\n"
+                           "API 返回的 completion 由于内容安全过滤被拒绝(非 AstrBot)\n"
+                           "语音转换失败，请稍后再试\n"
+                           "语音转换失败\n"
+                           "网络连接超时\n"
+                           "服务器暂时不可用\n"
+                           "请求频率过高\n"
+                           "连接失败\n"
+                           "调用失败")
         keywords_str = config.get('error_keywords', default_keywords)
         self.error_keywords = self._parse_keywords(keywords_str)
 
@@ -126,8 +148,9 @@ class IntelligentRetry(Star):
 
     def _parse_status_codes(self, config: AstrBotConfig) -> Tuple[Set[int], Set[int]]:
         """解析状态码配置"""
-        retryable_codes_default = "400\n429\n502\n503\n504"
-        non_retryable_codes_default = ""
+        # 更新默认状态码为用户提供的列表
+        retryable_codes_default = "429\n500\n502\n503\n504\n524"
+        non_retryable_codes_default = "400\n401\n403\n404"
         
         retryable_codes_str = config.get('retryable_status_codes', retryable_codes_default)
         non_retryable_codes_str = config.get('non_retryable_status_codes', non_retryable_codes_default)
@@ -362,6 +385,109 @@ class IntelligentRetry(Star):
         except (ValueError, AttributeError):
             return None
 
+    def _detect_truncation(self, text: str, llm_response=None) -> bool:
+        """
+        检测回复是否被截断 - Gemini截断增强检测
+        """
+        if not text:
+            return False
+        
+        # 1. 检查finish_reason='length' (最可靠的截断标识)
+        if llm_response:
+            try:
+                if hasattr(llm_response, 'choices') and llm_response.choices:
+                    finish_reason = getattr(llm_response.choices[0], 'finish_reason', None)
+                    if finish_reason == 'length':
+                        logger.debug("检测到finish_reason='length'，判定为截断")
+                        return True
+            except Exception:
+                pass
+        
+        # 2. 检查句子完整性
+        text = text.strip()
+        if len(text) < 10:  # 很短的回复不判断为截断
+            return False
+        
+        # 中文句子结尾标点
+        chinese_endings = ['。', '！', '？', '…', '：', '；']
+        # 英文句子结尾标点  
+        english_endings = ['.', '!', '?', '...', ':', ';']
+        
+        # 检查最后一个字符是否为正常结束标点
+        if text and text[-1] not in chinese_endings + english_endings:
+            # 特殊处理：检查是否包含中文字符
+            import re
+            has_chinese = bool(re.search(r'[\u4e00-\u9fff]', text))
+            
+            if has_chinese:
+                # 中文文本：更敏感的截断检测
+                chinese_truncation_patterns = [
+                    r'，$',      # 以逗号结尾
+                    r'、$',      # 以顿号结尾  
+                    r'和$',      # 以"和"结尾
+                    r'或$',      # 以"或"结尾
+                    r'但$',      # 以"但"结尾
+                    r'因为$',    # 以"因为"结尾
+                    r'所以$',    # 以"所以"结尾
+                    r'然后$',    # 以"然后"结尾
+                    r'的$',      # 以"的"结尾
+                    r'来$',      # 以"来"结尾
+                    r'[\u4e00-\u9fff]$',  # 以任何中文字符结尾但无标点
+                ]
+                
+                for pattern in chinese_truncation_patterns:
+                    if re.search(pattern, text):
+                        return True
+            else:
+                # 英文文本：检查是否以不完整方式结尾
+                english_truncation_patterns = [
+                    r',$',       # 以逗号结尾
+                    r'\w+\s*$',  # 以英文单词结尾但无标点
+                    r'and$',     # 以"and"结尾
+                    r'or$',      # 以"or"结尾
+                    r'but$',     # 以"but"结尾
+                    r'the$',     # 以"the"结尾
+                    r'to$',      # 以"to"结尾
+                ]
+                
+                for pattern in english_truncation_patterns:
+                    if re.search(pattern, text):
+                        return True
+        
+        # 3. 检查代码块完整性
+        if '```' in text:
+            code_blocks = text.count('```')
+            if code_blocks % 2 != 0:  # 奇数个代码块标记，说明未闭合
+                logger.debug("检测到未闭合的代码块")
+                return True
+        
+        # 4. 检查列表完整性
+        import re
+        # 检查数字列表是否不完整
+        list_pattern = r'\d+\.\s*[^\n]*$'  # 以数字列表项结尾
+        if re.search(list_pattern, text):
+            # 检查最后一行是否像未完成的列表项
+            lines = text.strip().split('\n')
+            if lines:
+                last_line = lines[-1].strip()
+                if re.match(r'\d+\.\s*\w*$', last_line):  # 列表编号后只有很少内容
+                    logger.debug("检测到不完整的列表项")
+                    return True
+        
+        # 5. 检查常见的省略号截断模式
+        ellipsis_patterns = [
+            r'\.{3,}$',     # 以三个或更多点结尾
+            r'…$',          # 以省略号结尾
+            r'【\.{3,}】$', # 以【...】结尾
+            r'\[\.{3,}\]$', # 以[...]结尾
+        ]
+        
+        for pattern in ellipsis_patterns:
+            if re.search(pattern, text):
+                return True
+        
+        return False
+
     def _should_retry(self, result) -> bool:
         """
         判断是否需要重试 - 修复版
@@ -433,6 +559,41 @@ class IntelligentRetry(Star):
         # 没有发现需要重试的条件
         return False
 
+    def _should_retry_with_truncation_check(self, result, llm_response=None) -> bool:
+        """
+        判断是否需要重试 - 包含截断检测的增强版本
+        """
+        # 首先使用原有的重试判断逻辑
+        if self._should_retry(result):
+            return True
+        
+        # 如果原有逻辑认为不需要重试，进一步检查是否为截断
+        try:
+            # 提取文本内容进行截断检测
+            plain_text_parts = []
+            
+            if not result:
+                return False
+                
+            # 从消息链中提取纯文本内容
+            message_chain = getattr(result, 'message_chain', None)
+            if message_chain:
+                for component in message_chain:
+                    if hasattr(component, 'text'):
+                        plain_text_parts.append(component.text)
+            
+            full_text = " ".join(plain_text_parts).strip()
+            
+            # 使用截断检测
+            if self._detect_truncation(full_text, llm_response):
+                print("检测到回复截断，需要重试")  # 临时使用print替代logger
+                return True
+                
+        except Exception as e:
+            print(f"截断检测时出错: {e}")  # 临时使用print替代logger
+        
+        return False
+
     @filter.on_decorating_result(priority=-1)
     async def check_and_retry(self, event: AstrMessageEvent):
         """
@@ -477,7 +638,7 @@ class IntelligentRetry(Star):
 
         # 获取并检查结果 - 现在确认这是LLM产生的结果
         result = event.get_result()
-        if not self._should_retry(result):
+        if not self._should_retry_with_truncation_check(result, _llm_response):
             return
         
         # 验证用户消息 - 确保这是用户主动发起的对话
@@ -559,6 +720,14 @@ class IntelligentRetry(Star):
                 logger.debug(f"重试中仍检测到错误关键词 '{keyword}'，继续重试")
                 return False  # 发现错误关键词，继续重试
 
+        # 检查截断 - 新增，确保重试中也能检测截断问题
+        try:
+            if self._detect_truncation(text):
+                print("重试中检测到截断，继续重试")  # 使用print替代logger
+                return False  # 检测到截断，继续重试
+        except Exception as e:
+            print(f"重试中截断检测出错: {e}")  # 使用print替代logger
+
         return True  # 没有发现问题，响应有效
 
     async def _apply_retry_delay(self, delay: float):
@@ -579,6 +748,6 @@ class IntelligentRetry(Star):
 
     async def terminate(self):
         """插件卸载时的清理工作"""
-        logger.info("已卸载 [IntelligentRetry] 插件 v2.7.2 (关键修复版)。")
+        logger.info("已卸载 [IntelligentRetry] 插件 v2.8.1 (Gemini截断检测版)。")
 
 # --- END OF FILE main.py ---
