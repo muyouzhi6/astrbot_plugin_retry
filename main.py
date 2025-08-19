@@ -413,18 +413,48 @@ class IntelligentRetry(Star):
             if should_retry:
                 print(f"[重试插件] 🔄 检测到无效回复，准备重试: '{reply_text[:50]}...'")
                 
-                # 执行一次重试
-                retry_result = await self._perform_retry_with_context(event)
-                
-                if retry_result:
-                    print("[重试插件] ✅ 重试成功，替换回复")
-                    # 替换response内容
-                    if hasattr(retry_result, 'result_chain'):
-                        response.result_chain = retry_result.result_chain
-                    if hasattr(retry_result, 'raw_completion'):
-                        response.raw_completion = retry_result.raw_completion
-                else:
-                    print("[重试插件] ❌ 重试失败")
+                # 多次重试逻辑
+                for attempt in range(1, self.max_attempts + 1):
+                    print(f"[重试插件] 第 {attempt}/{self.max_attempts} 次重试...")
+                    
+                    # 执行重试
+                    retry_result = await self._perform_retry_with_context(event)
+                    
+                    if not retry_result:
+                        print(f"[重试插件] 第 {attempt} 次重试调用失败")
+                        continue
+                    
+                    # 验证重试结果是否真的有效
+                    retry_text = ""
+                    if hasattr(retry_result, 'result_chain') and retry_result.result_chain:
+                        try:
+                            for comp in retry_result.result_chain.chain:
+                                if hasattr(comp, 'text') and comp.text:
+                                    retry_text += comp.text
+                        except:
+                            pass
+                    
+                    # 检查重试结果是否还是无效的
+                    retry_raw_completion = getattr(retry_result, 'raw_completion', None)
+                    is_retry_still_invalid = self._should_retry_simple(retry_text, retry_raw_completion)
+                    
+                    if is_retry_still_invalid:
+                        print(f"[重试插件] 第 {attempt} 次重试仍然无效: '{retry_text[:50]}...' (长度:{len(retry_text)})")
+                        if attempt < self.max_attempts:
+                            await asyncio.sleep(self.retry_delay)  # 重试前等待
+                            continue
+                        else:
+                            print(f"[重试插件] ❌ 已达到最大重试次数 ({self.max_attempts})，全部重试失败")
+                            # 不替换response，保持原样，让系统处理
+                            break
+                    else:
+                        print(f"[重试插件] ✅ 第 {attempt} 次重试真正成功: '{retry_text[:50]}...' (长度:{len(retry_text)})")
+                        # 替换response内容
+                        if hasattr(retry_result, 'result_chain'):
+                            response.result_chain = retry_result.result_chain
+                        if hasattr(retry_result, 'raw_completion'):
+                            response.raw_completion = retry_result.raw_completion
+                        break
             
             return True
             
