@@ -30,10 +30,10 @@
     "default": 2
   },
   "error_keywords": {
-    "description": "触发重试的错误关键词",
+    "description": "🎯 触发重试的错误关键词",
     "type": "text",
-    "hint": "当LLM的回复中包含这些关键词时，将触发重试。请每行输入一个关键词，不区分大小写。",
-    "default": "api 返回的内容为空\nAPI 返回的 completion 由于内容安全过滤被拒绝(非 AstrBot)"
+    "hint": "💡 当LLM回复中包含这些关键词时将触发重试。\n📝 输入格式：每行一个关键词，不区分大小写\n✅ 示例：\n  • api 返回的内容为空\n  • 网络连接超时\n  • 服务器内部错误\n⚠️ 注意：空行会被自动忽略",
+    "default": "api 返回的内容为空\nAPI 返回的 completion 由于内容安全过滤被拒绝(非 AstrBot)\n网络连接超时\n服务器暂时不可用"
   },
   "always_use_system_prompt": {
     "description": "强制使用Provider的人设覆盖上下文中的system消息",
@@ -42,16 +42,16 @@
     "default": true
   },
   "retryable_status_codes": {
-    "description": "允许重试的HTTP状态码(每行一个)",
+    "description": "✅ 允许重试的HTTP状态码",
     "type": "text",
-    "hint": "当错误文本中包含这些状态码时，允许进入重试流程。支持 400/429/502/503/504 等。",
-    "default": "400\n429\n502\n503\n504"
+    "hint": "💡 当错误信息中包含这些HTTP状态码时允许进入重试流程。\n📝 输入格式：每行一个状态码（400-599范围）\n✅ 推荐配置：\n  • 429 (请求频率过高)\n  • 502 (网关错误)\n  • 503 (服务不可用)\n  • 504 (网关超时)\n⚠️ 注意：无效状态码会被自动忽略",
+    "default": "429\n502\n503\n504"
   },
   "non_retryable_status_codes": {
-    "description": "禁止重试的HTTP状态码(每行一个)",
+    "description": "🚫 禁止重试的HTTP状态码",
     "type": "text",
-    "hint": "当错误文本中包含这些状态码时，将直接跳过重试。留空表示不限制。",
-    "default": ""
+    "hint": "💡 当错误信息中包含这些HTTP状态码时直接跳过重试。\n📝 输入格式：每行一个状态码（400-599范围）\n🔥 优先级：禁止重试 > 允许重试 > 错误关键词\n✅ 常见配置：\n  • 400 (请求格式错误)\n  • 401 (未授权)\n  • 403 (禁止访问)\n💭 留空表示不限制任何状态码",
+    "default": "400\n401\n403"
   },
   "fallback_system_prompt": {
     "description": "备用人设(system prompt)",
