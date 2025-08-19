@@ -13,8 +13,8 @@ from astrbot.api.star import Context, Star, register
 @register(
     "intelligent_retry",
     "木有知 & 长安某",
-    "当LLM回复为空或包含特定错误关键词时，自动进行多次重试，保持完整上下文和人设。V2.9新增增强截断检测功能",
-    "2.9"
+    "当LLM回复为空或包含特定错误关键词时，自动进行多次重试，保持完整上下文和人设。V2.8.2新增增强截断检测功能",
+    "2.8.2"
 )
 class IntelligentRetry(Star):
     """
