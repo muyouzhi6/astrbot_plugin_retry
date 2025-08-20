@@ -1,14 +1,14 @@
 # 插件的唯一标识符，应与插件目录名一致，且符合规范
-name: astrbot_plugin_retry
+name: intelligent_retry
 
 # 插件的简短描述，会显示在插件市场列表页
-desc: 【智能重试v4.4】当LLM回复为空或包含特定错误关键词时自动重试，保持完整上下文和人设。支持用户可控的截断检测开关，0.3秒极速响应，自定义兜底回复。
+desc: 当LLM回复为空或包含特定错误关键词/可配置状态码时，自动重试并保持原有上下文与人设；支持指数退避、状态码白/黑名单与失败兜底。
 
 # 插件版本号，请遵循 "主版本.次版本.修订号" 格式
-version: "4.4.0"
+version: 2.6.3
 
 # 插件作者
 author: 木有知 & 长安某
 
 # 插件的 Git 仓库地址
-repo: https://github.com/muyouzhi6/astrbot_plugin_retry
+repo: https://github.com/muyouzhi6/astrabot_plugin_retry # 请确保这是你最终的仓库地址
