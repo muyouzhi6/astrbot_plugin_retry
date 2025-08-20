@@ -1,301 +1,164 @@
+# --- START OF FILE main.py ---
+
 import asyncio
 import json
-import re
-from typing import Optional, Set, List, Dict, Any, Tuple, Union
 
-# AstrBot 运行环境导入；若在本地无框架，使用轻量兼容桩以便导入通过
-try:
-    from astrbot.api.event import AstrMessageEvent, filter  # type: ignore
-    from astrbot.api.star import Context, Star, register  # type: ignore
-    from astrbot.api import logger  # type: ignore
-    import astrbot.api.message_components as Comp  # type: ignore
-except Exception:  # 仅用于本地/测试环境兼容
-    class Context: ...
-
-    class Star:
-        def __init__(self, context):
-            self.context = context
-
-    def register(*_args, **_kwargs):
-        def _deco(cls):
-            return cls
-        return _deco
-
-    class AstrMessageEvent: ...
-
-    class filter:
-        @staticmethod
-        def on_llm_request(*args, **kwargs):
-            def _deco(fn):
-                return fn
-            return _deco
-
-        @staticmethod
-        def on_llm_response(*args, **kwargs):
-            def _deco(fn):
-                return fn
-            return _deco
-
-    class logger:  # 简易日志
-        @staticmethod
-        def info(msg): print(f"[INFO] {msg}")
-        @staticmethod
-        def warning(msg): print(f"[WARN] {msg}")
-        @staticmethod
-        def error(msg): print(f"[ERROR] {msg}")
-        @staticmethod
-        def debug(msg): print(f"[DEBUG] {msg}")
-
-    class Comp:
-        class Image:
-            def __init__(self, url=None):
-                self.url = url
-
-
-# 为了兼容静态检查器，提供一个始终存在的基类别名
-try:
-    BaseStar = Star  # type: ignore[name-defined]
-except Exception:  # pragma: no cover - 仅在极端环境下触发
-    class BaseStar:
-        def __init__(self, context):
-            self.context = context
-
+import astrbot.api.message_components as Comp
+from astrbot.api import logger, AstrBotConfig
+from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.star import Context, Star, register
 
 @register(
-    "astrbot_plugin_retry",
+    "intelligent_retry",
     "木有知 & 长安某",
-    "当LLM回复为空或包含特定错误关键词时，自动进行多次重试，保持完整上下文和人设。激进截断检测v4.4 - 用户可控",
-    "4.4.0"
+    "当LLM回复为空或包含特定错误关键词时，自动进行多次重试，保持完整上下文和人设",
+    "2.6.3"
 )
-class IntelligentRetry(BaseStar):
+class IntelligentRetry(Star):
     """
-    智能重试插件：
-    - 空回复检测
-    - 错误关键词与正则模式检测
-    - HTTP 4xx/5xx 状态码检测（禁止 > 允许 > 关键词/截断）
-    - 截断检测（finish_reason=length + 文本启发式）
-    - 完整上下文与人设控制（可移除历史 system 并使用 Provider/fallback）
-    - 多次重试 + 自适应/指数延迟
-    - 兜底回复
+    一个AstrBot插件，在检测到LLM回复为空或返回包含特定关键词的错误文本时，
+    自动进行多次重试，并完整保持原有的上下文和人设。
+    V2.5.0: 修复了上下文丢失和人设不一致的问题，确保重试时保持完全相同的对话环境。
+    V2.6.0: 新增按HTTP状态码决定是否重试的能力（可配置白/黑名单，默认允许400/429/502/503/504）。
+    V2.6.1: 新增 always_use_system_prompt 配置，允许在重试时强制覆盖上下文中的 system 消息，统一使用 Provider 的 system_prompt，避免被异常/污染的人设影响。
+    V2.6.2: 增加 fallback_system_prompt，当 Provider 未提供人设时可由插件配置提供备用人设，仍可强制覆盖上下文中的 system 消息。
+    V2.6.3: 可选输出最近 N 条上下文的预览日志，便于核对上下文是否带入（仅 DEBUG 级别）。
     """
 
-    def __init__(self, context: Context):
+    def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
-
-        # 读取配置
-        try:
-            config = getattr(context, 'config_helper', None)
-            logger.debug(f"[重试插件] config_helper = {config}")
-            if config and hasattr(config, 'get_plugin_config'):
-                config_data = config.get_plugin_config() or {}
-            else:
-                config_data = {}
-        except Exception as e:
-            logger.warning(f"[重试插件] 配置读取异常: {e}")
-            config_data = {}
-        logger.debug(f"[重试插件] config_data = {config_data}")
-
-        # 配置项
-        self.enable_truncation_detection: bool = bool(config_data.get('enable_truncation_detection', True))
-        self.enable_error_keyword_detection: bool = bool(config_data.get('enable_error_keyword_detection', True))
-        self.adaptive_delay: bool = bool(config_data.get('adaptive_delay', True))
-        self.max_attempts: int = int(config_data.get('max_attempts', 3) or 3)
-
-        # retry_delay 允许 float；若 schema 给了 int 也能解析
-        _retry_delay_raw = config_data.get('retry_delay', 2)
-        try:
-            self.retry_delay: float = float(_retry_delay_raw)
-        except (TypeError, ValueError):
-            self.retry_delay = 2.0 if _retry_delay_raw in (None, "") else 2.0
-
-        # 错误关键词默认
-        schema_default_keywords = (
-            "api 返回的内容为空\n"
-            "API 返回的内容为空\n"
-            "APITimeoutError\n"
-            "错误类型: Exception\n"
-            "API 返回的 completion 由于内容安全过滤被拒绝(非 AstrBot)\n"
-            "语音转换失败，请稍后再试\n"
-            "语音转换失败\n"
-            "网络连接超时\n"
-            "服务器暂时不可用\n"
-            "请求频率过高\n"
-            "连接失败"
-        )
-        error_keywords_text: str = config_data.get('error_keywords', schema_default_keywords) or ""
-        self.error_keywords: List[str] = [
-            kw.strip() for kw in error_keywords_text.split('\n') if kw.strip()
-        ]
+        # 基础配置
+        self.max_attempts = config.get('max_attempts', 3)
+        self.retry_delay = config.get('retry_delay', 2)
+        default_keywords = "api 返回的内容为空\nAPI 返回的 completion 由于内容安全过滤被拒绝(非 AstrBot)\n调用失败"
+        keywords_str = config.get('error_keywords', default_keywords)
+        self.error_keywords = [k.strip().lower() for k in keywords_str.split('\n') if k.strip()]
 
         # 人设控制
-        self.always_use_system_prompt: bool = bool(config_data.get('always_use_system_prompt', True))
-        self.fallback_system_prompt_text: str = str(config_data.get('fallback_system_prompt', "") or "")
+        self.always_use_system_prompt = config.get('always_use_system_prompt', True)
+        self.fallback_system_prompt_text = config.get('fallback_system_prompt', '').strip()
 
-        # 状态码配置（含 524）
-        self.retryable_status_codes: Set[int] = self._parse_codes(
-            config_data.get('retryable_status_codes', '429\n500\n502\n503\n504\n524')
-        )
-        self.non_retryable_status_codes: Set[int] = self._parse_codes(
-            config_data.get('non_retryable_status_codes', '400\n401\n403\n404')
-        )
+        # 基于状态码的重试控制
+        retryable_codes_default = "400\n429\n502\n503\n504"
+        non_retryable_codes_default = ""
+        retryable_codes_str = config.get('retryable_status_codes', retryable_codes_default)
+        non_retryable_codes_str = config.get('non_retryable_status_codes', non_retryable_codes_default)
 
-        # 调试/日志输出配置
-    self.log_context_preview: bool = bool(config_data.get('log_context_preview', False))
-    self.context_preview_last_n: int = int(config_data.get('context_preview_last_n', 10) or 10)
-        self.context_preview_max_chars: int = int(config_data.get('context_preview_max_chars', 120) or 120)
+        def _parse_codes(s: str):
+            codes = set()
+            for line in s.split('\n'):
+                t = line.strip()
+                if t.isdigit():
+                    try:
+                        codes.add(int(t))
+                    except Exception:
+                        pass
+            return codes
+
+        self.retryable_status_codes = _parse_codes(retryable_codes_str)
+        self.non_retryable_status_codes = _parse_codes(non_retryable_codes_str)
+
+        # 上下文预览日志（仅用于调试）
+        self.log_context_preview = bool(config.get('log_context_preview', False))
+        try:
+            self.context_preview_last_n = max(0, int(config.get('context_preview_last_n', 3)))
+        except Exception:
+            self.context_preview_last_n = 3
+        try:
+            self.context_preview_max_chars = max(20, int(config.get('context_preview_max_chars', 120)))
+        except Exception:
+            self.context_preview_max_chars = 120
 
         # 兜底回复
-        schema_default_fallback = "抱歉，刚才遇到服务波动，我已自动为你重试多次仍未成功。请稍后再试或换个说法。"
-        user_fallback = config_data.get('fallback_reply', None)
-        # 明确遵循 schema 提示：留空则不发送消息
-        if user_fallback is None:
-            self.fallback_reply = schema_default_fallback
-        elif str(user_fallback).strip() == "":
-            self.fallback_reply = ""  # 显式禁用兜底
-        else:
-            self.fallback_reply = str(user_fallback)
-        logger.info(f"[重试插件] 已加载 v4.4，最多重试 {self.max_attempts} 次，基础延迟 {self.retry_delay}s")
-        logger.debug(
-            f"[重试插件] 截断检测={'启用' if self.enable_truncation_detection else '禁用'} | 错误检测={'启用' if self.enable_error_keyword_detection else '禁用'}"
+        self.fallback_reply = config.get('fallback_reply', "抱歉，刚才遇到服务波动，我已自动为你重试多次仍未成功。请稍后再试或换个说法。")
+
+        logger.info(
+            f"已加载 [IntelligentRetry] 插件 v2.6.3, "
+            f"将在LLM回复无效时自动重试 (最多 {self.max_attempts} 次)，保持完整上下文和人设。"
         )
-        logger.debug(f"[重试插件] 兜底回复预览: '{self.fallback_reply[:30]}...'")
 
-    def _parse_codes(self, codes_str: str) -> Set[int]:
-        codes: Set[int] = set()
-        for line in (codes_str or '').split('\n'):
-            s = (line or '').strip()
-            if s.isdigit():
-                try:
-                    code = int(s)
-                    if 400 <= code <= 599:
-                        codes.add(code)
-                except Exception:
-                    continue
-        return codes
-
-    async def _get_complete_context(self, unified_msg_origin: Optional[str]) -> List[Dict[str, Any]]:
-        if not unified_msg_origin:
-            return []
+    async def _get_complete_context(self, unified_msg_origin: str):
+        """获取完整的对话上下文，包括当前消息"""
         try:
-            if not hasattr(self.context, 'conversation_manager') or not self.context.conversation_manager:
-                return []
             curr_cid = await self.context.conversation_manager.get_curr_conversation_id(unified_msg_origin)
+            
             if not curr_cid:
                 return []
+            
             conv = await self.context.conversation_manager.get_conversation(unified_msg_origin, curr_cid)
-            if not conv or not getattr(conv, 'history', None):
+            
+            if not conv or not conv.history:
                 return []
-            context_history = json.loads(conv.history)
-            return context_history if isinstance(context_history, list) else []
+            
+            # 获取完整的历史对话，包括当前这次对话
+            context_history = await asyncio.to_thread(json.loads, conv.history)
+            return context_history
+            
         except Exception as e:
-            logger.warning(f"[重试插件] 获取对话上下文失败: {e}")
+            logger.error(f"获取对话上下文时发生错误: {e}")
             return []
 
-    async def _get_provider_config(self) -> Tuple[Optional[Any], Optional[str], Optional[Any]]:
-        provider = None
-        try:
-            provider = self.context.get_using_provider()
-        except Exception as e:
-            logger.error(f"[重试插件] 获取 Provider 失败: {e}")
+    async def _get_provider_config(self):
+        """获取 LLM 提供商的完整配置，包括人设"""
+        provider = self.context.get_using_provider()
         if not provider:
             return None, None, None
-
+        
+        # 获取系统提示词（人设）
         system_prompt = None
-        try:
-            if hasattr(provider, "system_prompt"):
-                system_prompt = provider.system_prompt
-            elif hasattr(provider, "config") and provider.config:
-                system_prompt = provider.config.get("system_prompt")
-        except Exception:
-            pass
-
+        if hasattr(provider, "system_prompt"):
+            system_prompt = provider.system_prompt
+        elif hasattr(provider, "config") and provider.config:
+            system_prompt = provider.config.get("system_prompt")
+        
+        # 获取工具配置
         func_tool = None
-        try:
-            if hasattr(provider, "func_tool"):
-                func_tool = provider.func_tool
-        except Exception:
-            pass
-
+        if hasattr(provider, "func_tool"):
+            func_tool = provider.func_tool
+        
         return provider, system_prompt, func_tool
 
-    def _extract_context_system_info(self, context_history: List[Dict[str, Any]]) -> Tuple[bool, str]:
-        has_system = False
-        sys_preview = ""
-        try:
-            for msg in context_history:
-                if isinstance(msg, dict) and str(msg.get('role', '')).lower() == 'system':
-                    has_system = True
-                    content = msg.get('content', '')
-                    sys_preview = str(content)[:60] if content else ""
-                    break
-        except Exception:
-            pass
-        return has_system, sys_preview
-
-    def _filter_system_messages(self, context_history: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], int]:
-        filtered: List[Dict[str, Any]] = []
-        removed = 0
-        for msg in context_history:
-            if isinstance(msg, dict) and str(msg.get('role', '')).lower() == 'system':
-                removed += 1
-            else:
-                filtered.append(msg)
-        return filtered, removed
-
-    def _set_fallback_response(self, response) -> None:
-        # 若用户显式禁用了兜底，直接返回
-        if not getattr(self, 'fallback_reply', None):
-            logger.info("[重试插件] 用户已禁用兜底回复，跳过替换")
-            return
-        try:
-            try:
-                from astrbot.api.message_components import Plain  # type: ignore
-            except Exception as import_error:
-                logger.warning(f"[重试插件] Plain 组件导入失败: {import_error}")
-                class Plain:  # 兼容模式
-                    def __init__(self, text):
-                        self.text = text
-                        self.type = 'Plain'
-                        self.convert = True
-            fallback_plain = Plain(text=self.fallback_reply)
-
-            if hasattr(response, 'result_chain') and hasattr(response.result_chain, 'chain'):
-                response.result_chain.chain = [fallback_plain]
-                logger.info("[重试插件] 兜底回复设置成功(模式1)")
-            elif hasattr(response, 'result_chain'):
-                fallback_chain = type('MessageChain', (), {'chain': [fallback_plain]})()
-                response.result_chain = fallback_chain
-                logger.info("[重试插件] 兜底回复设置成功(模式2)")
-            else:
-                logger.warning("[重试插件] 无法设置兜底回复：response 格式不支持")
-        except Exception as e:
-            logger.error(f"[重试插件] 设置兜底回复失败: {e}")
-
-    async def _perform_retry_with_context(self, event: Any) -> Optional[Any]:
+    async def _perform_retry_with_context(self, event: AstrMessageEvent):
+        """执行重试，完整保持原有上下文和人设"""
         provider, system_prompt, func_tool = await self._get_provider_config()
+        
         if not provider:
-            logger.error("[重试插件] LLM 提供商不可用，无法重试")
+            logger.warning("LLM提供商未启用，无法重试。")
             return None
-        try:
-            context_history = await self._get_complete_context(getattr(event, 'unified_msg_origin', None))
-            has_system_in_contexts, _ = self._extract_context_system_info(context_history)
 
-            image_urls: List[str] = []
+        try:
+            # 获取完整的对话上下文
+            context_history = await self._get_complete_context(event.unified_msg_origin)
+            # 判断上下文中是否已经包含 system 消息（仅用于记录与决策）
+            has_system_in_contexts = False
+            sys_preview = ""
             try:
-                msg_obj = getattr(event, 'message_obj', None)
-                if msg_obj and hasattr(msg_obj, 'message'):
-                    for comp in msg_obj.message:
-                        if hasattr(comp, 'url') and comp.url:
-                            image_urls.append(comp.url)
+                for m in context_history:
+                    if isinstance(m, dict) and str(m.get('role', '')).lower() == 'system':
+                        has_system_in_contexts = True
+                        sys_preview = str(m.get('content', ''))[:60]
+                        break
             except Exception:
                 pass
+            
+            # 获取图片URL
+            image_urls = [
+                comp.url
+                for comp in event.message_obj.message
+                if isinstance(comp, Comp.Image) and hasattr(comp, "url") and comp.url
+            ]
 
-            logger.info(f"[重试插件] 正在重试... 上下文长度: {len(context_history)}")
+            logger.debug(f"正在使用完整上下文进行重试... Prompt: '{event.message_str}'")
+            logger.debug(
+                f"上下文长度: {len(context_history)}, 系统提示词存在: {system_prompt is not None}, "
+                f"上下文含system: {has_system_in_contexts}{'，示例: '+sys_preview if has_system_in_contexts and sys_preview else ''}"
+            )
 
+            # 可选：输出最近 N 条上下文预览（仅 DEBUG 日志，避免泄露过多内容）
             if self.log_context_preview and context_history and self.context_preview_last_n > 0:
                 try:
                     tail = context_history[-self.context_preview_last_n:]
-                    lines: List[str] = []
+                    preview_lines = []
                     for idx, m in enumerate(tail, 1):
                         if isinstance(m, dict):
                             role = str(m.get('role', ''))
@@ -303,337 +166,211 @@ class IntelligentRetry(BaseStar):
                         else:
                             role = ''
                             content = str(m)
-                        text = str(content).replace('\n', ' ')
+                        try:
+                            text = str(content)
+                        except Exception:
+                            text = '<non-text-content>'
+                        text = text.replace('\n', ' ')
                         if len(text) > self.context_preview_max_chars:
                             text = text[:self.context_preview_max_chars] + '…'
-                        lines.append(f"#{idx} [{role}] {text}")
-                    logger.debug("[重试插件] 上下文预览\n" + "\n".join(lines))
-                except Exception:
+                        preview_lines.append(f"#{idx} [{role}] {text}")
+                    logger.debug("上下文预览(最近 %d 条):\n%s" % (self.context_preview_last_n, "\n".join(preview_lines)))
+                except Exception as _:
+                    # 预览失败不影响主流程
                     pass
 
+            # 若开启强制人设，且 Provider 提供了 system_prompt，则移除上下文中的所有 system 消息并强制注入
             if self.always_use_system_prompt:
-                if not system_prompt and self.fallback_system_prompt_text:
+                # 若 Provider 无人设而插件提供了备用人设，则使用备用人设
+                if (not system_prompt) and self.fallback_system_prompt_text:
                     system_prompt = self.fallback_system_prompt_text
-                    logger.info("[重试插件] 使用备用人设")
-                if system_prompt:
-                    context_history, removed = self._filter_system_messages(context_history)
-                    if removed > 0:
-                        logger.info(f"[重试插件] 移除 {removed} 条历史 system 消息以强制覆盖人设")
-                    has_system_in_contexts = False
+                    logger.debug("Provider 未提供 system_prompt，已启用插件的 fallback_system_prompt 作为人设")
 
-            kwargs: Dict[str, Any] = {
-                'prompt': getattr(event, 'message_str', ''),
+                if system_prompt:
+                    original_len = len(context_history)
+                    removed = 0
+                    filtered = []
+                    for m in context_history:
+                        if isinstance(m, dict) and str(m.get('role', '')).lower() == 'system':
+                            removed += 1
+                            continue
+                        filtered.append(m)
+                    if removed > 0:
+                        logger.debug(f"已强制覆盖人设：移除 {removed} 条历史 system 消息")
+                    context_history = filtered
+                    # 更新 has_system_in_contexts 标记仅用于后续日志/决策
+                    has_system_in_contexts = False
+                else:
+                    logger.warning("配置了 always_use_system_prompt，但 Provider 未提供 system_prompt，已回退为上下文判断模式")
+            
+            # 使用完整的参数进行重试
+            kwargs = {
+                'prompt': event.message_str,
                 'contexts': context_history,
                 'image_urls': image_urls,
                 'func_tool': func_tool,
             }
+            # 强制人设：无条件传入 Provider 的 system_prompt
             if self.always_use_system_prompt and system_prompt:
                 kwargs['system_prompt'] = system_prompt
-            elif (not self.always_use_system_prompt) and (not has_system_in_contexts) and system_prompt:
+            # 非强制：仅当上下文没有 system 消息时，额外传入 Provider 的 system_prompt
+            elif not self.always_use_system_prompt and (not has_system_in_contexts) and system_prompt:
                 kwargs['system_prompt'] = system_prompt
 
             llm_response = await provider.text_chat(**kwargs)
+            
             return llm_response
+            
         except Exception as e:
-            logger.error(f"[重试插件] 重试调用 LLM 失败: {e}")
+            logger.error(f"重试调用LLM时发生错误: {e}")
             return None
 
-    def _detect_truncation(self, text: str, llm_response=None) -> bool:
+    def _extract_status_code(self, text: str):
+        """
+        从错误文本中提取 4xx/5xx 状态码（简易解析），返回 int 或 None。
+        注意：
+        - 这里并不直接访问 HTTP 响应对象，而是对上游返回的『文本』进行正则解析；
+        - 解析到的首个 4xx/5xx 会被认为是本次错误的代表状态码；
+        - 若 Provider 的错误格式不同（不含状态码），则返回 None，由其它判定逻辑兜底。
+        示例可匹配："HTTP 502 Bad Gateway"、"status: 429"、"... 400 ..."。
+        """
         if not text:
-            return True
-        if llm_response:
-            try:
-                if hasattr(llm_response, 'choices') and getattr(llm_response, 'choices'):
-                    finish_reason = getattr(llm_response.choices[0], 'finish_reason', None)
-                    if finish_reason == 'length':
-                        logger.info("[重试插件] 检测到 finish_reason='length'，官方确认截断")
-                        return True
-                elif isinstance(llm_response, dict):
-                    choices = llm_response.get('choices') or []
-                    if isinstance(choices, list) and choices:
-                        fr = choices[0].get('finish_reason')
-                        if fr == 'length':
-                            logger.info("[重试插件] 检测到 finish_reason='length' (dict)，官方确认截断")
-                            return True
-            except Exception:
-                pass
-
-        text = text.strip()
-        if re.search(r'\d+\.\s*$', text):
-            return True
-        if re.search(r'[（(]\d+[）)]\s*$', text):
-            return True
-        return not self._is_clearly_complete(text)
-
-    def _is_clearly_complete(self, text: str) -> bool:
-        if not text or not text.strip():
-            return False
-        text = text.strip()
-
-        if text.endswith(('.', '。', '！', '!', '？', '?')):
-            return True
-        if text.endswith(('…', ';', '；')):
-            return True
-        if text.endswith(('"', '“', '”', "'")):
-            return True
-        if text.endswith((')', '）', ']', '】', '}', '》')):
-            return True
-        if text.endswith('```'):
-            return True
-        if re.search(r'\.(com|org|net|edu|gov|cn|co\.uk|json|txt|py|js|html|css|md|pdf|docx?|xlsx?)$', text):
-            return True
-        if re.search(r'v?\d+\.\d+(\.\d+)?$', text):
-            return True
-        if re.search(r'\d+%$', text):
-            return True
-        if re.search(r'\d+(\.\d+)?\s*(GB|MB|KB|TB|元|块|个|次|秒|分钟|小时|天|年|月|kg|g|m|cm|km)$', text):
-            return True
-
-        completion_words = ['完成', '结束', '搞定', '好的', '明白', '了解', '收到', '明白了', '知道了', '完成了', '结束了', 'done', 'finished', 'complete', 'ok', 'got it']
-        for word in completion_words:
-            if text.endswith(word):
-                return True
-
-        flexible_completion_patterns = [
-            r'完成了?\b',
-            r'明白了?\b',
-            r'知道了?\b',
-            r'了解了?\b',
-            r'收到了?\b',
-            r'好的\b',
-            r'搞定了?\b'
-        ]
-        for pattern in flexible_completion_patterns:
-            if re.search(pattern, text) and len(text) <= 10:
-                return True
-
-        words = re.findall(r'[\u4e00-\u9fff]+|[a-zA-Z]+', text)
-        if len(words) >= 3:
-            last_word = words[-1] if words else ""
-            if len(last_word) >= 1 and last_word.lower() not in [
-                '但是', '然后', '所以', '而且', '另外', '因此', '于是', '接着', '包括', '如下', '还有', '以及',
-                'however', 'therefore', 'moreover', 'furthermore', 'because', 'since', 'including'
-            ]:
-                completeness_indicators = [
-                    '是', '有', '会', '能', '可以', '应该', '需要', '正常', '成功', '完整', '回复', '内容',
-                    '没有', '问题', '这是', '这个', '一个', '已经', '现在', '可能', '应该', '确实',
-                    '知道', '明白', '理解', '认为', '觉得', '发现', '注意', '建议', '推荐', '希望'
-                ]
-                has_completeness = any(p in text for p in completeness_indicators)
-                is_reasonable_length = len(text) >= 6
-                if has_completeness and is_reasonable_length:
-                    return True
-
-        complete_patterns = [
-            r'^正常的.{2,}$',
-            r'^这是.{4,}[^一个的]$',
-            r'^我.{2,}了$',
-            r'^.{3,}内容$',
-            r'^.{3,}没有问题$',
-            r'^.{2,}很好$',
-            r'^.{2,}不错$',
-        ]
-        for pattern in complete_patterns:
-            if re.match(pattern, text):
-                return True
-        return False
-
-    @filter.on_llm_response()
-    async def on_llm_response(self, event: AstrMessageEvent, response) -> bool:
+            return None
         try:
-            if not response:
-                return True
-
-            reply_text = ""
-            if hasattr(response, 'result_chain') and getattr(response, 'result_chain'):
-                try:
-                    for comp in response.result_chain.chain:
-                        if hasattr(comp, 'text') and comp.text:
-                            reply_text += comp.text
-                except Exception:
-                    pass
-
-            raw_completion = getattr(response, 'raw_completion', None)
-
-            should_retry = self._should_retry_simple(reply_text, raw_completion)
-
-            if should_retry:
-                logger.info(f"[重试插件] 检测到无效回复，准备重试: '{reply_text[:50]}...'")
-
-                for attempt in range(1, self.max_attempts + 1):
-                    logger.info(f"[重试插件] 第 {attempt}/{self.max_attempts} 次重试...")
-
-                    if attempt > 1:
-                        if self.adaptive_delay:
-                            base = max(self.retry_delay, 0.2)
-                            if "timeout" in reply_text.lower() or "超时" in reply_text:
-                                delay = max(base, 0.2)
-                            elif "请求失败" in reply_text or "频率过高" in reply_text or "429" in reply_text:
-                                delay = max(base, 0.5)
-                            else:
-                                delay = max(base, 0.5)
-                            delay = min(delay + 0.1 * (attempt - 1), 3.0)
-                        else:
-                            base = max(self.retry_delay, 0.2)
-                            delay = min(base * (2 ** (attempt - 2)), 6.0)
-                        logger.info(f"[重试插件] 延迟 {delay:.2f}s 后重试...")
-                        await asyncio.sleep(delay)
-
-                    retry_result = await self._perform_retry_with_context(event)
-
-                    if not retry_result:
-                        logger.warning(f"[重试插件] 第 {attempt} 次重试调用失败")
-                        continue
-
-                    retry_text = ""
-                    if hasattr(retry_result, 'result_chain') and getattr(retry_result, 'result_chain'):
-                        try:
-                            for comp in retry_result.result_chain.chain:
-                                if hasattr(comp, 'text') and comp.text:
-                                    retry_text += comp.text
-                        except Exception:
-                            pass
-
-                    retry_raw_completion = getattr(retry_result, 'raw_completion', None)
-                    is_retry_still_invalid = self._should_retry_simple(retry_text, retry_raw_completion)
-
-                    if is_retry_still_invalid:
-                        logger.info(f"[重试插件] 第 {attempt} 次重试仍然无效: '{retry_text[:50]}...' (长度:{len(retry_text)})")
-                        if attempt < self.max_attempts:
-                            continue
-                        else:
-                            logger.warning(f"[重试插件] 已达到最大重试次数 ({self.max_attempts})，全部重试失败")
-                            self._set_fallback_response(response)
-                            break
-                    else:
-                        logger.info(f"[重试插件] 第 {attempt} 次重试成功: '{retry_text[:50]}...' (长度:{len(retry_text)})")
-                        if hasattr(retry_result, 'result_chain'):
-                            response.result_chain = retry_result.result_chain
-                        if hasattr(retry_result, 'raw_completion'):
-                            response.raw_completion = retry_result.raw_completion
-                        break
-
-            return True
-        except Exception as e:
-            logger.error(f"[重试插件] 处理响应时发生错误: {e}")
-            return True
-
-    def _should_retry_simple(self, text: str, llm_response: Optional[Union[dict, Any]] = None) -> bool:
-        # 0. 工具调用/非文本完成保护
-        try:
-            finish_reason = None
-            if llm_response is not None:
-                if isinstance(llm_response, dict):
-                    choices = llm_response.get('choices') or []
-                    if isinstance(choices, list) and choices:
-                        finish_reason = choices[0].get('finish_reason')
-                else:
-                    if hasattr(llm_response, 'choices') and getattr(llm_response, 'choices'):
-                        first = llm_response.choices[0]
-                        finish_reason = getattr(first, 'finish_reason', None)
-            if finish_reason in {"tool_calls", "function_call", "content_filter"}:
-                logger.debug(f"[重试插件] 检测到非文本完成 finish_reason={finish_reason}，跳过重试")
-                return False
-        except Exception:
-            pass
-
-        # 1. 空回复
-        if not text or not text.strip():
-            logger.debug("[重试插件] 检测到空回复")
-            return True
-
-        # 2. HTTP 状态码优先级（禁止 > 允许）
-        try:
-            code = self._extract_http_status(text, llm_response)
-            if code is not None:
-                if code in self.non_retryable_status_codes:
-                    logger.info(f"[重试插件] 检测到禁止重试状态码 {code}，跳过重试")
-                    return False
-                if code in self.retryable_status_codes:
-                    logger.info(f"[重试插件] 检测到可重试状态码 {code}，将进行重试")
-                    return True
-        except Exception:
-            pass
-
-        # 3. 错误关键词/模式
-        if self.enable_error_keyword_detection:
-            text_lower = text.lower().strip()
-
-            specific_errors = [
-                "请求失败。错误类型",
-                "APTL错误信息",
-                "request time out请在控制台查看",
-                "分享错误详情",
-            ]
-            for error in specific_errors:
-                if error.lower() in text_lower:
-                    logger.debug(f"[重试插件] 检测到特定错误模式: {error}")
-                    return True
-
-            error_patterns = [
-                r'错误类型.*?exception',
-                r'请求.*?失败',
-                r'time.*?out',
-                r'错误.*?详情',
-                r'控制台.*?查看',
-            ]
-            for pattern in error_patterns:
-                if re.search(pattern, text_lower):
-                    logger.debug(f"[重试插件] 检测到错误模式: {pattern}")
-                    return True
-
-            for keyword in self.error_keywords:
-                if keyword.lower() in text_lower:
-                    logger.debug(f"[重试插件] 检测到错误关键词: {keyword}")
-                    return True
-
-        # 4. 截断检测
-        if self.enable_truncation_detection:
-            if self._detect_truncation(text, llm_response):
-                logger.debug("[重试插件] 检测到回复截断")
-                return True
-        else:
-            logger.debug("[重试插件] 截断检测已禁用，跳过")
-
-        return False
-
-    @staticmethod
-    def _extract_http_status(text: str, llm_response: Optional[Union[dict, Any]]) -> Optional[int]:
-        # 文本中搜索
-        try:
-            m = re.search(r"\b([45]\d{2})\b", text or "")
+            import re
+            m = re.search(r"\b([45]\d{2})\b", text)
             if m:
-                code = int(m.group(1))
-                if 400 <= code <= 599:
-                    return code
-        except Exception:
-            pass
-
-        # raw completion 中搜索
-        try:
-            if llm_response is None:
-                return None
-            if isinstance(llm_response, dict):
-                err = llm_response.get('error') or {}
-                for key in ('status', 'code', 'http_status'):
-                    val = err.get(key)
-                    if isinstance(val, int) and 400 <= val <= 599:
-                        return val
-                    if isinstance(val, str) and val.isdigit():
-                        iv = int(val)
-                        if 400 <= iv <= 599:
-                            return iv
-            else:
-                err = getattr(llm_response, 'error', None)
-                for key in ('status', 'code', 'http_status'):
-                    if err is not None and hasattr(err, key):
-                        val = getattr(err, key)
-                        try:
-                            iv = int(val)
-                            if 400 <= iv <= 599:
-                                return iv
-                        except Exception:
-                            pass
+                return int(m.group(1))
         except Exception:
             pass
         return None
+
+    def _should_retry(self, result):
+        """
+        判断是否需要重试：
+        判定顺序（从高到低）：
+        1) 结果对象为空 或 文本内容为空 -> 重试
+        2) 文本中解析到状态码：
+           - 命中 non_retryable_status_codes -> 不重试（优先级最高）
+           - 命中 retryable_status_codes    -> 重试
+        3) 命中错误关键词 -> 重试
+        4) 其它情况 -> 不重试
+        """
+        if not result:
+            logger.debug("结果为空，需要重试")
+            return True
+        
+        # 检查是否有实际内容
+        has_content = any(
+            (isinstance(c, Comp.Plain) and c.text.strip())
+            or not isinstance(c, Comp.Plain)  # 任何非Plain类型的消息段都算作有内容
+            for c in result.chain
+        )
+        
+        if not has_content:
+            logger.debug("检测到空回复，需要重试")
+            return True
+        
+    # 检查是否包含错误关键词或可重试状态码
+        message_str = result.get_plain_text()
+        if message_str:
+            code = self._extract_status_code(message_str)
+            if code is not None:
+                if code in self.non_retryable_status_codes:
+                    logger.debug(f"检测到状态码 {code}，配置为不可重试，跳过重试")
+                    return False
+                if code in self.retryable_status_codes:
+                    logger.debug(f"检测到状态码 {code}，配置允许重试")
+                    return True
+            lower_message_str = message_str.lower()
+            for keyword in self.error_keywords:
+                if keyword in lower_message_str:
+                    logger.debug(f"检测到错误关键词 '{keyword}'，需要重试")
+                    return True
+        
+        return False
+
+    @filter.on_decorating_result(priority=-1)
+    async def check_and_retry(self, event: AstrMessageEvent):
+        """
+        检查结果并进行重试，保持完整的上下文和人设
+        """
+        # 如果禁用重试则直接返回
+        if self.max_attempts <= 0:
+            return
+
+        # 检查原始LLM响应，如果是工具调用则不干预
+        _llm_response = getattr(event, 'llm_response', None)
+        if _llm_response and hasattr(_llm_response, 'choices') and _llm_response.choices:
+            finish_reason = getattr(_llm_response.choices[0], 'finish_reason', None)
+            if finish_reason == 'tool_calls':
+                logger.debug("检测到正常的工具调用，不进行干预")
+                return
+
+        result = event.get_result()
+        
+        # 检查是否需要重试
+        if not self._should_retry(result):
+            return
+        
+        # 只有在用户发送了文本内容时才进行重试
+        if not event.message_str or not event.message_str.strip():
+            logger.debug("用户消息为空，跳过重试")
+            return
+
+        logger.info("检测到需要重试的情况，开始重试流程")
+
+        # 进行重试（带指数退避）
+        delay = max(0, int(self.retry_delay))
+        for attempt in range(1, self.max_attempts + 1):
+            logger.info(f"第 {attempt}/{self.max_attempts} 次重试...")
+
+            new_response = await self._perform_retry_with_context(event)
+
+            if not new_response or not getattr(new_response, 'completion_text', ''):
+                logger.warning(f"第 {attempt} 次重试返回空结果")
+                if attempt < self.max_attempts and delay > 0:
+                    await asyncio.sleep(delay)
+                    # 指数退避，最高不超过 30 秒
+                    delay = min(delay * 2, 30)
+                continue
+
+            new_text = new_response.completion_text.strip()
+
+            # 检查新回复是否包含错误关键词或特定状态码：
+            # - 若命中不可重试状态码，提前结束循环；
+            # - 若命中可重试状态码，将 has_error 置为 True 继续重试；
+            # - 否则按关键词结果决定。
+            new_text_lower = new_text.lower()
+            has_error = any(keyword in new_text_lower for keyword in self.error_keywords)
+            code = self._extract_status_code(new_text)
+            if code is not None:
+                if code in self.non_retryable_status_codes:
+                    logger.warning(f"检测到不可重试状态码 {code}，提前结束重试")
+                    break
+                if code in self.retryable_status_codes:
+                    has_error = True
+
+            if new_text and not has_error:
+                logger.info(f"第 {attempt} 次重试成功，生成有效回复")
+                # 直接替换结果，保持事件流程的完整性
+                event.set_result(event.plain_result(new_text))
+                return
+            else:
+                logger.warning(f"第 {attempt} 次重试仍包含错误或为空: {new_text[:100]}...")
+                if attempt < self.max_attempts and delay > 0:
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, 30)
+
+        logger.error(f"所有 {self.max_attempts} 次重试均失败")
+        # 若配置了兜底回复，则发送友好提示；否则维持清空并停止
+        if self.fallback_reply and self.fallback_reply.strip():
+            event.set_result(event.plain_result(self.fallback_reply.strip()))
+        else:
+            event.clear_result()
+            event.stop_event()
+
+    async def terminate(self):
+        logger.info("已卸载 [IntelligentRetry] 插件。")
+
+# --- END OF FILE main.py ---
