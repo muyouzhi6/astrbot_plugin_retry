@@ -73,14 +73,25 @@ class IntelligentRetry(Star):
     def __init__(self, context: Context):
         super().__init__(context)
         
-        # 使用优化配置 - 解决用户三大问题
-        self.max_attempts = 3
-        self.retry_delay = 0.3  # 极速响应：0.3秒基础延迟
-        self.adaptive_delay = True  # 自适应延迟而非指数增长
-
-        # 🎛️ 用户可配置选项
-        self.enable_truncation_detection = self._get_truncation_detection_setting()  # 是否启用截断检测
-        self.enable_error_keyword_detection = True  # 是否启用错误关键词检测（建议保持开启）
+        # 从配置系统读取用户设置
+        try:
+            # 尝试获取用户配置
+            config = getattr(context, 'config_helper', None)
+            if config:
+                config_data = config.data
+            else:
+                config_data = {}
+        except:
+            config_data = {}
+        
+        # 🎛️ 用户可配置选项 (从配置界面读取)
+        self.enable_truncation_detection = config_data.get('enable_truncation_detection', True)
+        self.enable_error_keyword_detection = config_data.get('enable_error_keyword_detection', True) 
+        self.adaptive_delay = config_data.get('adaptive_delay', True)
+        
+        # 基础配置
+        self.max_attempts = config_data.get('max_attempts', 3)
+        self.retry_delay = config_data.get('retry_delay', 0.3)  # 极速响应：0.3秒基础延迟
 
         # 🔥 问题1解决：全面错误检测，精确匹配用户遇到的错误
         self.error_keywords = [
@@ -139,100 +150,29 @@ class IntelligentRetry(Star):
         self.context_preview_max_chars = 120
 
         # 兜底回复 - 支持自定义
-        self.fallback_reply = self._get_custom_fallback_reply()
+        self.fallback_reply = config_data.get('fallback_reply', self._get_default_fallback_reply())
 
-        print(f"[重试插件] ⚡ 已加载 v4.4 智能控制版本，最多重试 {self.max_attempts} 次，0.3秒急速响应")
+        # 其他配置
+        self.always_use_system_prompt = config_data.get('always_use_system_prompt', True)
+        self.fallback_system_prompt_text = config_data.get('fallback_system_prompt', "")
+
+        # 状态码配置 
+        self.retryable_status_codes = self._parse_codes(config_data.get('retryable_status_codes', '429\n500\n502\n503\n504'))
+        self.non_retryable_status_codes = self._parse_codes(config_data.get('non_retryable_status_codes', '400\n401\n403\n404'))
+
+        # 调试配置
+        self.log_context_preview = config_data.get('log_context_preview', False)
+        self.context_preview_last_n = config_data.get('context_preview_last_n', 3)
+        self.context_preview_max_chars = config_data.get('context_preview_max_chars', 120)
+
+        print(f"[重试插件] ⚡ 已加载 v4.4 智能控制版本，最多重试 {self.max_attempts} 次，{self.retry_delay}秒急速响应")
         print(f"[重试插件] 🎯 强化错误检测，精确捕获用户遇到的timeout错误")
         print(f"[重试插件] 🎛️ 截断检测: {'✅启用' if self.enable_truncation_detection else '❌禁用'} | 错误检测: {'✅启用' if self.enable_error_keyword_detection else '❌禁用'}")
         print(f"[重试插件] 💬 兜底回复: '{self.fallback_reply[:30]}...'")
 
-    def _get_truncation_detection_setting(self) -> bool:
-        """获取截断检测开关设置"""
-        import os
-        
-        # 尝试从配置文件读取
-        config_file = os.path.join(os.path.dirname(__file__), "truncation_config.txt")
-        
-        try:
-            if os.path.exists(config_file):
-                with open(config_file, 'r', encoding='utf-8') as f:
-                    lines = f.readlines()
-                    # 寻找有效的配置行（非注释、非空行）
-                    for line in lines:
-                        line = line.strip()
-                        if line and not line.startswith('#'):
-                            content = line.lower()
-                            if content in ['true', '1', 'yes', 'on', 'enable', '启用', '开启']:
-                                print(f"[重试插件] 📖 从配置文件读取: 截断检测已启用")
-                                return True
-                            elif content in ['false', '0', 'no', 'off', 'disable', '禁用', '关闭']:
-                                print(f"[重试插件] 📖 从配置文件读取: 截断检测已禁用")
-                                return False
-                            break  # 只处理第一个有效配置行
-        except Exception as e:
-            print(f"[重试插件] ⚠️ 读取截断检测配置失败: {e}")
-        
-        # 如果没有配置文件，创建一个示例配置
-        try:
-            if not os.path.exists(config_file):
-                config_content = """# 截断检测配置
-# true = 启用截断检测（推荐，但可能较频繁）
-# false = 禁用截断检测（只检测明确的错误关键词）
-true
-
-# 说明：
-# 启用截断检测会更积极地重试，确保完整回复，但可能产生更多重试
-# 禁用截断检测只在明确出错时重试，减少不必要的重试次数
-# 建议：如果觉得重试太频繁，可以改为 false"""
-                
-                with open(config_file, 'w', encoding='utf-8') as f:
-                    f.write(config_content)
-                print(f"[重试插件] 📝 已创建截断检测配置文件: {config_file}")
-        except Exception as e:
-            print(f"[重试插件] ⚠️ 创建截断检测配置失败: {e}")
-        
-        # 默认启用（保持原有行为）
-        print(f"[重试插件] 🎛️ 使用默认设置: 截断检测已启用")
-        return True
-
-    def _get_custom_fallback_reply(self) -> str:
-        """🔥 问题3解决：修复自定义兜底回复功能"""
-        # 多重尝试机制确保读取成功
-        import os
-        
-        # 尝试1：插件目录下的配置文件
-        config_paths = [
-            os.path.join(os.path.dirname(__file__), "fallback_config.txt"),
-            os.path.join(os.path.dirname(__file__), "custom_fallback.txt"),
-            os.path.join(os.path.dirname(__file__), "fallback.txt"),
-        ]
-        
-        for config_file in config_paths:
-            try:
-                if os.path.exists(config_file):
-                    with open(config_file, 'r', encoding='utf-8') as f:
-                        custom_reply = f.read().strip()
-                        if custom_reply:
-                            print(f"[重试插件] ✅ 成功使用自定义兜底回复: {config_file}")
-                            return custom_reply
-            except Exception as e:
-                print(f"[重试插件] ⚠️ 读取 {config_file} 失败: {e}")
-        
-        # 如果没有找到配置，创建一个示例配置
-        try:
-            example_file = os.path.join(os.path.dirname(__file__), "fallback_config.txt")
-            if not os.path.exists(example_file):
-                example_content = "主人，小助手刚才脑子转不过来了呢～已经帮你重试了好几次，但还是没能成功。稍等一下下再试试哦～"
-                with open(example_file, 'w', encoding='utf-8') as f:
-                    f.write(example_content)
-                print(f"[重试插件] 📝 已创建示例配置文件: {example_file}")
-                return example_content
-        except Exception as e:
-            print(f"[重试插件] ⚠️ 创建示例配置失败: {e}")
-        
-        # 默认兜底回复
+    def _get_default_fallback_reply(self) -> str:
+        """获取默认兜底回复"""
         return "主人，小助手刚才遇到了点小问题呢～已经自动重试好几次了，但还是没成功。要不稍等一下再试试？"
-
     def _parse_codes(self, codes_str: str) -> Set[int]:
         """解析状态码配置"""
         codes = set()
