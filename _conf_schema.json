@@ -1,22 +1,4 @@
 {
-  "enable_truncation_detection": {
-    "description": "🎛️ 启用截断检测",
-    "type": "bool",
-    "hint": "🎯 控制是否检测回复截断并自动重试。\n✅ 启用：确保回复完整，但可能增加重试次数\n⚫ 禁用：只检测明确错误，减少重试频率\n💡 建议：创作场景启用，日常聊天可禁用",
-    "default": true
-  },
-  "enable_error_keyword_detection": {
-    "description": "🔍 启用错误关键词检测", 
-    "type": "bool",
-    "hint": "🎯 控制是否检测错误关键词并自动重试。\n✅ 建议保持启用，确保错误情况下的可靠重试\n⚫ 禁用后将只检测空回复",
-    "default": true
-  },
-  "adaptive_delay": {
-    "description": "⚡ 智能自适应延迟",
-    "type": "bool", 
-    "hint": "🎯 控制重试延迟策略。\n✅ 启用：根据错误类型智能调整延迟(0.2-0.5秒)\n⚫ 禁用：使用传统指数增长延迟\n💡 建议启用，获得更快的响应速度",
-    "default": true
-  },
   "max_attempts": {
     "description": "最大重试次数",
     "type": "int",
@@ -33,7 +15,7 @@
     "description": "上下文预览的条目数",
     "type": "int",
     "hint": "仅在启用上下文预览时生效，表示显示最近 N 条历史。",
-    "default": 10
+    "default": 3
   },
   "context_preview_max_chars": {
     "description": "单条预览的最大字符数",
@@ -48,10 +30,10 @@
     "default": 2
   },
   "error_keywords": {
-    "description": "🎯 触发重试的错误关键词",
+    "description": "触发重试的错误关键词",
     "type": "text",
-    "hint": "💡 当LLM回复中包含这些关键词时将触发重试。\n📝 输入格式：每行一个关键词，不区分大小写\n✅ 一键复制默认配置，然后根据需要修改\n⚠️ 注意：每行输入完按回车，空行会被自动忽略",
-    "default": "api 返回的内容为空\nAPI 返回的内容为空\nAPITimeoutError\n错误类型: Exception\nAPI 返回的 completion 由于内容安全过滤被拒绝(非 AstrBot)\n语音转换失败，请稍后再试\n语音转换失败\n网络连接超时\n服务器暂时不可用\n请求频率过高\n连接失败"
+    "hint": "当LLM的回复中包含这些关键词时，将触发重试。请每行输入一个关键词，不区分大小写。",
+    "default": "api 返回的内容为空\nAPI 返回的 completion 由于内容安全过滤被拒绝(非 AstrBot)"
   },
   "always_use_system_prompt": {
     "description": "强制使用Provider的人设覆盖上下文中的system消息",
@@ -60,16 +42,16 @@
     "default": true
   },
   "retryable_status_codes": {
-    "description": "✅ 允许重试的HTTP状态码",
+    "description": "允许重试的HTTP状态码(每行一个)",
     "type": "text",
-    "hint": "💡 当错误信息中包含这些HTTP状态码时允许进入重试流程。\n📝 输入格式：每行一个状态码（400-599范围）\n✅ 默认包含常见的服务器错误和临时错误\n💭 每行输入完按回车添加下一个\n⚠️ 注意：无效状态码会被自动忽略",
-    "default": "429\n500\n502\n503\n504\n524"
+    "hint": "当错误文本中包含这些状态码时，允许进入重试流程。支持 400/429/502/503/504 等。",
+    "default": "400\n429\n502\n503\n504"
   },
   "non_retryable_status_codes": {
-    "description": "🚫 禁止重试的HTTP状态码",
-    "type": "text", 
-    "hint": "💡 当错误信息中包含这些HTTP状态码时直接跳过重试。\n📝 输入格式：每行一个状态码（400-599范围）\n🔥 优先级：禁止重试 > 允许重试 > 错误关键词\n✅ 默认禁止客户端错误重试\n💭 留空表示不限制任何状态码",
-    "default": "400\n401\n403\n404"
+    "description": "禁止重试的HTTP状态码(每行一个)",
+    "type": "text",
+    "hint": "当错误文本中包含这些状态码时，将直接跳过重试。留空表示不限制。",
+    "default": ""
   },
   "fallback_system_prompt": {
     "description": "备用人设(system prompt)",
