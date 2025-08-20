@@ -19,6 +19,6 @@ Intelligent Retry Plugin for AstrBot
 
 from .main import IntelligentRetry
 
-__all__ = ['IntelligentRetry']
+__all__ = ['Intelligent Retry']
 __version__ = '4.1'
 __author__ = '木有知 & 长安某'
