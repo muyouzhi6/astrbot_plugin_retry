@@ -94,39 +94,20 @@ class IntelligentRetry(Star):
         self.retry_delay = config_data.get('retry_delay', 0.3)  # 极速响应：0.3秒基础延迟
 
         # 🔥 问题1解决：全面错误检测，精确匹配用户遇到的错误 
-        # 从配置读取错误关键词，支持用户自定义
-        default_keywords = """api 返回的内容为空
+        # 从配置读取错误关键词，与_conf_schema.json保持一致
+        schema_default_keywords = """api 返回的内容为空
 API 返回的内容为空
 APITimeoutError
-请求失败
-错误类型，APTL错误信息
-APTL错误信息
-request time out请在控制台查看
-请在控制台查看和分享错误详情
-请在控制台查看
-分享错误详情
-错误详情
-request time out
-timeout
-time out
-超时
-网络连接超时
-错误类型
 错误类型: Exception
-出现错误
-发生错误
-调用失败
-连接失败
+API 返回的 completion 由于内容安全过滤被拒绝(非 AstrBot)
+语音转换失败，请稍后再试
+语音转换失败
+网络连接超时
 服务器暂时不可用
 请求频率过高
-语音转换失败
-exception
-error
-failed
-failure
-异常"""
+连接失败"""
         
-        error_keywords_text = config_data.get('error_keywords', default_keywords)
+        error_keywords_text = config_data.get('error_keywords', schema_default_keywords)
         self.error_keywords = [
             keyword.strip() 
             for keyword in error_keywords_text.split('\n') 
@@ -146,8 +127,9 @@ failure
         self.context_preview_last_n = 3
         self.context_preview_max_chars = 120
 
-        # 兜底回复 - 支持自定义
-        self.fallback_reply = config_data.get('fallback_reply', self._get_default_fallback_reply())
+        # 兜底回复 - 与_conf_schema.json保持一致
+        schema_default_fallback = "抱歉，刚才遇到服务波动，我已自动为你重试多次仍未成功。请稍后再试或换个说法。"
+        self.fallback_reply = config_data.get('fallback_reply', schema_default_fallback)
 
         # 其他配置
         self.always_use_system_prompt = config_data.get('always_use_system_prompt', True)
@@ -167,9 +149,6 @@ failure
         print(f"[重试插件] 🎛️ 截断检测: {'✅启用' if self.enable_truncation_detection else '❌禁用'} | 错误检测: {'✅启用' if self.enable_error_keyword_detection else '❌禁用'}")
         print(f"[重试插件] 💬 兜底回复: '{self.fallback_reply[:30]}...'")
 
-    def _get_default_fallback_reply(self) -> str:
-        """获取默认兜底回复"""
-        return "主人，小助手刚才遇到了点小问题呢～已经自动重试好几次了，但还是没成功。要不稍等一下再试试？"
     def _parse_codes(self, codes_str: str) -> Set[int]:
         """解析状态码配置"""
         codes = set()
