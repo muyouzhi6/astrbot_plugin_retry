@@ -53,7 +53,7 @@ except Exception:  # 仅用于本地/测试环境兼容
 
 @register(
     "astrabot_plugin_retry",
-    "木有知 & 长安某", 
+    "木有知 & 长安某",
     "当LLM回复为空或包含特定错误关键词时，自动进行多次重试，保持完整上下文和人设。激进截断检测v4.4 - 用户可控",
     "4.4"
 )
@@ -80,8 +80,8 @@ class IntelligentRetry(Star):
             print(f"[重试插件] 🔍 调试：config_helper = {config}")
             
             if config and hasattr(config, 'get_plugin_config'):
-                config_data = config.get_plugin_config("astrabot_plugin_retry")
-                print(f"[重试插件] 🔍 调试：get_plugin_config('astrabot_plugin_retry') = {config_data}")
+                config_data = config.get_plugin_config()
+                print(f"[重试插件] 🔍 调试：get_plugin_config() = {config_data}")
             else:
                 config_data = {}
                 print(f"[重试插件] 🔍 调试：使用空配置 (config_helper无效)")
@@ -90,22 +90,8 @@ class IntelligentRetry(Star):
             print(f"[重试插件] 🔍 调试：配置读取异常 - {e}")
         
         print(f"[重试插件] 🔍 调试：最终config_data = {config_data}")
-        print(f"[重试插件] 🔍 调试：config_data类型 = {type(config_data)}")
-        print(f"[重试插件] 🔍 调试：config_data是否为空 = {len(config_data) == 0 if isinstance(config_data, dict) else 'N/A'}")
         
         # 🎛️ 用户可配置选项 (从配置界面读取)
-        user_truncation = config_data.get('enable_truncation_detection')
-        user_error_detection = config_data.get('enable_error_keyword_detection')
-        user_adaptive_delay = config_data.get('adaptive_delay')
-        user_max_attempts = config_data.get('max_attempts')
-        user_retry_delay = config_data.get('retry_delay')
-        
-        print(f"[重试插件] 🔍 调试：用户截断检测设置 = {user_truncation}")
-        print(f"[重试插件] 🔍 调试：用户错误检测设置 = {user_error_detection}")
-        print(f"[重试插件] 🔍 调试：用户自适应延迟设置 = {user_adaptive_delay}")
-        print(f"[重试插件] 🔍 调试：用户最大重试次数设置 = {user_max_attempts}")
-        print(f"[重试插件] 🔍 调试：用户重试延迟设置 = {user_retry_delay}")
-        
         self.enable_truncation_detection = config_data.get('enable_truncation_detection', True)
         self.enable_error_keyword_detection = config_data.get('enable_error_keyword_detection', True) 
         self.adaptive_delay = config_data.get('adaptive_delay', True)
@@ -113,12 +99,6 @@ class IntelligentRetry(Star):
         # 基础配置
         self.max_attempts = config_data.get('max_attempts', 3)
         self.retry_delay = config_data.get('retry_delay', 0.3)  # 极速响应：0.3秒基础延迟
-        
-        print(f"[重试插件] 🔍 调试：最终截断检测 = {self.enable_truncation_detection}")
-        print(f"[重试插件] 🔍 调试：最终错误检测 = {self.enable_error_keyword_detection}")
-        print(f"[重试插件] 🔍 调试：最终自适应延迟 = {self.adaptive_delay}")
-        print(f"[重试插件] 🔍 调试：最终最大重试次数 = {self.max_attempts}")
-        print(f"[重试插件] 🔍 调试：最终重试延迟 = {self.retry_delay}")
 
         # 🔥 问题1解决：全面错误检测，精确匹配用户遇到的错误 
         # 从配置读取错误关键词，与_conf_schema.json保持一致
