@@ -77,12 +77,19 @@ class IntelligentRetry(Star):
         try:
             # 🎛️ 从AstrBot配置系统读取用户设置
             config = getattr(context, 'config_helper', None)
+            print(f"[重试插件] 🔍 调试：config_helper = {config}")
+            
             if config and hasattr(config, 'get_plugin_config'):
                 config_data = config.get_plugin_config()
+                print(f"[重试插件] 🔍 调试：get_plugin_config() = {config_data}")
             else:
                 config_data = {}
-        except:
+                print(f"[重试插件] 🔍 调试：使用空配置 (config_helper无效)")
+        except Exception as e:
             config_data = {}
+            print(f"[重试插件] 🔍 调试：配置读取异常 - {e}")
+        
+        print(f"[重试插件] 🔍 调试：最终config_data = {config_data}")
         
         # 🎛️ 用户可配置选项 (从配置界面读取)
         self.enable_truncation_detection = config_data.get('enable_truncation_detection', True)
@@ -129,7 +136,17 @@ API 返回的 completion 由于内容安全过滤被拒绝(非 AstrBot)
 
         # 兜底回复 - 与_conf_schema.json保持一致
         schema_default_fallback = "抱歉，刚才遇到服务波动，我已自动为你重试多次仍未成功。请稍后再试或换个说法。"
-        self.fallback_reply = config_data.get('fallback_reply', schema_default_fallback)
+        user_fallback = config_data.get('fallback_reply')
+        
+        print(f"[重试插件] 🔍 调试：schema默认兜底回复 = '{schema_default_fallback}'")
+        print(f"[重试插件] 🔍 调试：用户设置兜底回复 = '{user_fallback}'")
+        
+        if user_fallback:
+            self.fallback_reply = user_fallback
+            print(f"[重试插件] ✅ 使用用户自定义兜底回复")
+        else:
+            self.fallback_reply = schema_default_fallback
+            print(f"[重试插件] ⚫ 使用schema默认兜底回复")
 
         # 其他配置
         self.always_use_system_prompt = config_data.get('always_use_system_prompt', True)
