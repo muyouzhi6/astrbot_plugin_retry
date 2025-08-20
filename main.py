@@ -62,7 +62,7 @@ except Exception:  # pragma: no cover - 仅在极端环境下触发
 
 
 @register(
-    "astrbot_intelligent_retry",
+    "astrbot_plugin_retry",
     "木有知 & 长安某",
     "当LLM回复为空或包含特定错误关键词时，自动进行多次重试，保持完整上下文和人设。激进截断检测v4.4 - 用户可控",
     "4.4.0"
