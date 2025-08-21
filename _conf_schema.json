@@ -1,4 +1,10 @@
 {
+  "enable_truncation_retry": {
+    "description": "启用截断重试",
+    "type": "bool",
+    "hint": "开启后，检测到回复结尾不是常见标点/字母/数字/文件后缀/网址时自动重试（如 Gemini 截断），建议仅在遇到相关问题时开启。",
+    "default": false
+  },
   "max_attempts": {
     "description": "最大重试次数",
     "type": "int",
@@ -58,6 +64,14 @@
     "type": "text",
     "hint": "当 Provider 未提供 system_prompt 且开启了“强制使用Provider人设”时，使用此文本作为人设。可留空。",
     "default": ""
+  },
+
+  "retry_delay_mode": {
+    "description": "重试间隔模式",
+  "type": "string",
+    "hint": "选择重试间隔的模式。fixed=每次重试间隔固定，exponential=指数退避（每次翻倍，最大30秒）。",
+    "default": "exponential",
+    "enum": ["fixed", "exponential"]
   },
   "fallback_reply": {
     "description": "重试全部失败时的兜底回复",
