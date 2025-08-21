@@ -12,7 +12,7 @@ from astrbot.api.star import Context, Star, register
     "intelligent_retry",
     "木有知 & 长安某",
     "当LLM回复为空或包含特定错误关键词时，自动进行多次重试，保持完整上下文和人设",
-    "2.6.3"
+    "2.6.4"
 )
 class IntelligentRetry(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
