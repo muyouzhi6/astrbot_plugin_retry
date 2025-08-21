@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-一个为 [Astrbot](https://github.com/AstrBotDevs/AstrBot) 设计的增强型插件，专门解决与大语言模型（LLM）交互时常见的不稳定问题（如空回复、网关错误等）。当 LLM 响应为空或出错时，会自动检测并智能重试，减少“无响应”或错误提示，让你的对话体验更顺畅、更省心。
+一个为 [Astrbot](https://github.com/AstrBotDevs/AstrBot) 设计的增强型插件，专门解决与大语言模型（LLM）交互时常见的不稳定问题（如空回复、对话截断（常见于gemini2.5pro）等）。当 LLM 响应为空或出错时，会自动检测并智能重试，减少“无响应”或错误提示，让你的对话体验更顺畅、更省心。
 
 当前版本：2.6.4
 
