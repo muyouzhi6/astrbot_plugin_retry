@@ -68,7 +68,10 @@ class IntelligentRetry(Star):
         # 合法结尾字符集/正则，支持自定义，默认覆盖常见标点、字母、数字、文件后缀、网址
         self.truncation_valid_tail_pattern = config.get(
             'truncation_valid_tail_pattern',
-            r'[。！？!?,.\w\d\u4e00-\u9fa5]$|\.(com|cn|org|net|io|ai|pdf|jpg|png|jpeg|gif|mp3|mp4|txt|zip|tar|gz|html|htm)$|https?://[\w\.-]+$'
+            # 扩展覆盖更多 ai 结尾符号，包括中文/英文引号、分号、冒号、括号、破折号、省略号、下划线、空格、制表符等
+            r"[。！？!?,;:、，．…—\-\(\)\[\]'\"“”‘’\w\d_\u4e00-\u9fa5\s\t]$"
+            r"|\.(com|cn|org|net|io|ai|pdf|jpg|png|jpeg|gif|mp3|mp4|txt|zip|tar|gz|html|htm)$"
+            r"|https?://[\w\.-]+$"
         )
 
         logger.info(
