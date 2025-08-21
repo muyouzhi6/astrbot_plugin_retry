@@ -11,7 +11,7 @@ from astrbot.api.star import Context, Star, register
 @register(
     "intelligent_retry",
     "木有知 & 长安某",
-    "当LLM回复为空、对话截断或包含特定错误关键词时，自动进行多次重试，保持完整上下文和人设",
+    "当LLM回复为空或包含特定错误关键词时，自动进行多次重试，保持完整上下文和人设",
     "2.6.4"
 )
 class IntelligentRetry(Star):
@@ -21,6 +21,60 @@ class IntelligentRetry(Star):
         self.max_attempts = config.get('max_attempts', 3)
         self.retry_delay = config.get('retry_delay', 2)
         self.retry_delay_mode = config.get('retry_delay_mode', 'exponential').lower().strip()
+        default_keywords = "api 返回的内容为空\nAPI 返回的 completion 由于内容安全过滤被拒绝(非 AstrBot)\n调用失败"
+        keywords_str = config.get('error_keywords', default_keywords)
+        self.error_keywords = [k.strip().lower() for k in keywords_str.split('\n') if k.strip()]
+
+        # 人设控制
+        self.always_use_system_prompt = config.get('always_use_system_prompt', True)
+        self.fallback_system_prompt_text = config.get('fallback_system_prompt', '').strip()
+
+        # 基于状态码的重试控制
+        retryable_codes_default = "400\n429\n502\n503\n504"
+        non_retryable_codes_default = ""
+        retryable_codes_str = config.get('retryable_status_codes', retryable_codes_default)
+        non_retryable_codes_str = config.get('non_retryable_status_codes', non_retryable_codes_default)
+
+        def _parse_codes(s: str):
+            codes = set()
+            for line in s.split('\n'):
+                t = line.strip()
+                if t.isdigit():
+                    try:
+                        codes.add(int(t))
+                    except Exception:
+                        pass
+            return codes
+
+        self.retryable_status_codes = _parse_codes(retryable_codes_str)
+        self.non_retryable_status_codes = _parse_codes(non_retryable_codes_str)
+
+        # 上下文预览日志（仅用于调试）
+        self.log_context_preview = bool(config.get('log_context_preview', False))
+        try:
+            self.context_preview_last_n = max(0, int(config.get('context_preview_last_n', 3)))
+        except Exception:
+            self.context_preview_last_n = 3
+        try:
+            self.context_preview_max_chars = max(20, int(config.get('context_preview_max_chars', 120)))
+        except Exception:
+            self.context_preview_max_chars = 120
+
+        # 兜底回复
+        self.fallback_reply = config.get('fallback_reply', "抱歉，刚才遇到服务波动，我已自动为你重试多次仍未成功。请稍后再试或换个说法。")
+
+        # 截断重试配置
+        self.enable_truncation_retry = bool(config.get('enable_truncation_retry', False))
+        # 合法结尾字符集/正则，支持自定义，默认覆盖常见标点、字母、数字、文件后缀、网址
+        self.truncation_valid_tail_pattern = config.get(
+            'truncation_valid_tail_pattern',
+            r'[。！？!?,.\w\d\u4e00-\u9fa5]$|\.(com|cn|org|net|io|ai|pdf|jpg|png|jpeg|gif|mp3|mp4|txt|zip|tar|gz|html|htm)$|https?://[\w\.-]+$'
+        )
+
+        logger.info(
+            f"已加载 [IntelligentRetry] 插件 v2.6.3, "
+            f"将在LLM回复无效时自动重试 (最多 {self.max_attempts} 次)，保持完整上下文和人设。"
+        )
         default_keywords = "api 返回的内容为空\nAPI 返回的 completion 由于内容安全过滤被拒绝(非 AstrBot)\n调用失败"
         keywords_str = config.get('error_keywords', default_keywords)
         self.error_keywords = [k.strip().lower() for k in keywords_str.split('\n') if k.strip()]
@@ -90,34 +144,7 @@ class IntelligentRetry(Star):
         if re.search(self.truncation_valid_tail_pattern, last_line, re.IGNORECASE):
             return False
         return True
-    def _is_truncated(self, text: str) -> bool:
-        """
-        检查回复是否疑似被截断：
-        - 结尾不是常见标点、字母、数字、文件后缀、网址等
-        - 可自定义正则
-        """
-        import re
-        if not text or not text.strip():
-            return False
-        # 只检测最后一行（防止多段回复）
-        last_line = text.strip().splitlines()[-1]
-        if re.search(self.truncation_valid_tail_pattern, last_line, re.IGNORECASE):
-            return False
-        return True
-    """
-    一个AstrBot插件，在检测到LLM回复为空或返回包含特定关键词的错误文本时，
-    自动进行多次重试，并完整保持原有的上下文和人设。
-    V2.5.0: 修复了上下文丢失和人设不一致的问题，确保重试时保持完全相同的对话环境。
-    V2.6.0: 新增按HTTP状态码决定是否重试的能力（可配置白/黑名单，默认允许400/429/502/503/504）。
-    V2.6.1: 新增 always_use_system_prompt 配置，允许在重试时强制覆盖上下文中的 system 消息，统一使用 Provider 的 system_prompt，避免被异常/污染的人设影响。
-    V2.6.2: 增加 fallback_system_prompt，当 Provider 未提供人设时可由插件配置提供备用人设，仍可强制覆盖上下文中的 system 消息。
-    V2.6.3: 可选输出最近 N 条上下文的预览日志，便于核对上下文是否带入（仅 DEBUG 级别）。
-    """
-
-    def __init__(self, context: Context, config: AstrBotConfig):
-        super().__init__(context)
-        # 基础配置
-        self.max_attempts = config.get('max_attempts', 3)
+    # ...existing code...
         self.retry_delay = config.get('retry_delay', 2)
         default_keywords = "api 返回的内容为空\nAPI 返回的 completion 由于内容安全过滤被拒绝(非 AstrBot)\n调用失败"
         keywords_str = config.get('error_keywords', default_keywords)
