@@ -1,226 +1,95 @@
-<p align="center">
- 
-![AstrBot-Logo-Simplified](https://github.com/user-attachments/assets/ffd99b6b-3272-4682-beaa-6fe74250f7d9)
+# AstrBot 错误/空值重试插件 (Intelligent Retry)
 
-</p>
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-<div align="center">
+一个为 [Astrbot](https://github.com/AstrBotDevs/AstrBot) 设计的增强型插件，专门解决与大语言模型（LLM）交互时常见的不稳定问题（如空回复、网关错误等）。当 LLM 响应为空或出错时，会自动检测并智能重试，减少“无响应”或错误提示，让你的对话体验更顺畅、更省心。
 
-_✨ 易上手的多平台 LLM 聊天机器人及开发框架 ✨_
+当前版本：2.6.4
 
-<a href="https://trendshift.io/repositories/12875" target="_blank"><img src="https://trendshift.io/api/badge/repositories/12875" alt="Soulter%2FAstrBot | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+## ✨ 功能特性
 
-[![GitHub release (latest by date)](https://img.shields.io/github/v/release/Soulter/AstrBot?style=for-the-badge&color=76bad9)](https://github.com/Soulter/AstrBot/releases/latest)
-<img src="https://img.shields.io/badge/python-3.10+-blue.svg?style=for-the-badge&color=76bad9" alt="python">
-<a href="https://hub.docker.com/r/soulter/astrbot"><img alt="Docker pull" src="https://img.shields.io/docker/pulls/soulter/astrbot.svg?style=for-the-badge&color=76bad9"/></a>
-<a  href="https://qm.qq.com/cgi-bin/qm/qr?k=wtbaNx7EioxeaqS9z7RQWVXPIxg2zYr7&jump_from=webapi&authKey=vlqnv/AV2DbJEvGIcxdlNSpfxVy+8vVqijgreRdnVKOaydpc+YSw4MctmEbr0k5"><img alt="QQ_community" src="https://img.shields.io/badge/QQ群-775869627-purple?style=for-the-badge&color=76bad9"></a>
-<a  href="https://t.me/+hAsD2Ebl5as3NmY1"><img alt="Telegram_community" src="https://img.shields.io/badge/Telegram-AstrBot-purple?style=for-the-badge&color=76bad9"></a>
-[![wakatime](https://wakatime.com/badge/user/915e5316-99c6-4563-a483-ef186cf000c9/project/018e705a-a1a7-409a-a849-3013485e6c8e.svg?style=for-the-badge&color=76bad9)](https://wakatime.com/badge/user/915e5316-99c6-4563-a483-ef186cf000c9/project/018e705a-a1a7-409a-a849-3013485e6c8e)
-![Dynamic JSON Badge](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fapi.soulter.top%2Fastrbot%2Fstats&query=v&label=7日消息量&cacheSeconds=3600&style=for-the-badge&color=3b618e)
-![Dynamic JSON Badge](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fapi.soulter.top%2Fastrbot%2Fplugin-num&query=%24.result&suffix=%E4%B8%AA&style=for-the-badge&label=%E6%8F%92%E4%BB%B6%E5%B8%82%E5%9C%BA&cacheSeconds=3600)
+- **自动重试**：在最终装饰阶段介入，直接替换结果，不打断事件流程。
+- **智能检测**：
+  1. 最终回复为空时自动重试；
+  2. 文本包含错误关键词（如“请求失败”“api 返回的内容为空”等）时自动重试。
+- **保持人设与上下文**：
+  - 始终带上完整的会话上下文（包含当前轮）。
+  - 支持“强制使用 Provider 人设”（always_use_system_prompt），会移除历史 system，并优先使用 Provider 的 system_prompt；若 Provider 无人设可配置 fallback_system_prompt。
+  - 默认自动补位：当上下文无 system 时自动注入 Provider 的 system_prompt。
+- **工具调用兼容**：检测到 finish_reason=tool_calls 时不干预，避免打断工具链。
+- **重试退避**：支持指数退避（初始 retry_delay，随后×2，封顶 30s）。
+- **失败兜底**：所有重试失败后返回可配置的兜底提示，避免“无响应”。
 
-<a href="https://github.com/Soulter/AstrBot/blob/master/README_en.md">English</a> ｜
-<a href="https://github.com/Soulter/AstrBot/blob/master/README_ja.md">日本語</a> ｜
-<a href="https://astrbot.app/">查看文档</a> ｜
-<a href="https://github.com/Soulter/AstrBot/issues">问题提交</a>
-</div>
+## 📦 安装
 
-AstrBot 是一个松耦合、异步、支持多消息平台部署、具有易用的插件系统和完善的大语言模型（LLM）接入功能的聊天机器人及开发框架。
+请在 AstrBot 的插件市场中搜索 `intelligent_retry` 进行安装，或通过以下方式手动安装：
 
-## ✨ 主要功能
+1. 进入 AstrBot 主目录。
+2. 打开 `data/plugins` 文件夹。
+3. 执行 `git clone https://github.com/muyouzhi6/astrabot_plugin_retry.git`。
+4. 重启 AstrBot 或在 WebUI 中重载插件。
 
-1. **大模型对话**。支持接入多种大模型服务。支持多模态、工具调用、MCP、原生知识库、人设等功能。
-2. **多消息平台支持**。支持接入 QQ、企业微信、微信公众号、飞书、Telegram、钉钉、Discord、KOOK 等平台。支持速率限制、白名单、百度内容审核。
-3. **Agent**。完善适配的 Agentic 能力。支持多轮工具调用、内置沙盒代码执行器、网页搜索等功能。
-4. **插件扩展**。深度优化的插件机制，支持[开发插件](https://astrbot.app/dev/plugin.html)扩展功能，社区插件生态丰富。
-5. **WebUI**。可视化配置和管理机器人，功能齐全。
+## ⚙️ 配置
 
-## ✨ 使用方式
+**所有配置项均可在 WebUI（网页界面）中插件管理页面进行设置，无需手动改代码，小白也能轻松上手！**
 
-#### Docker 部署
+安装并重载插件后，你可以在 AstrBot 的 WebUI -> 插件管理 -> Intelligent Retry -> 管理 -> 配置 中对插件进行设置。
 
-推荐使用 Docker / Docker Compose 方式部署 AstrBot。
+| 配置项 | 类型 | 描述 | 默认值 |
+| :--- | :--- | :--- | :--- |
+| **最大重试次数** | `整数` | 当 LLM 回复无效时，插件尝试重新请求的最大次数。设置为 0 则禁用重试。 | `3` |
+| **重试间隔（秒  ** | `整数` | 每次重试之间的等待时间，单位为秒。 | `2` |
+| **触发重试的错误关键词** | `文本` | 当 LLM 的回复中包含这些关键词时，将触发重试。每行一个，不区分大小写。 | (见默认值) |
+| **强制使用 Provider 人设** | `布尔` | 开启后移除上下文里所有 system 消息，并统一使用 Provider 的 system_prompt（防“人设污染”）。 | `true` |
+| **备用人设(system prompt)** | `文本` | 当 Provider 无人设且启用强制人设时，使用此文本作为人设。 | 空 |
+| **允许重试的 HTTP 状态码** | `文本` | 错误文本中出现这些码时允许重试，每行一个。 | 400, 429, 502, 503, 504 |
+| **禁止重试的 HTTP 状态码** | `文本` | 错误文本中出现这些码时直接跳过重试。 | 空 |
+| **调试：输出上下文预览** | `布尔` | 在重试时输出最近 N 条上下文的简要预览（DEBUG 日志）。 | false |
+| **预览条目数** | `整数` | 启用预览时，显示最近 N 条历史。 | 3 |
+| **预览最大字符数** | `整数` | 启用预览时，每条预览裁剪后的最大字符数。 | 120 |
+| **兜底回复** | `文本` | 达到最大重试次数仍失败时，发送给用户的友好提示。留空则不发送消息。 | 抱歉，刚才遇到服务波动... |
 
-请参阅官方文档 [使用 Docker 部署 AstrBot](https://astrbot.app/deploy/astrbot/docker.html#%E4%BD%BF%E7%94%A8-docker-%E9%83%A8%E7%BD%B2-astrbot) 。
+配置修改后会自动保存并生效。
 
-#### 宝塔面板部署
+## 📝 使用方法
 
-AstrBot 与宝塔面板合作，已上架至宝塔面板。
+本插件无需命令，安装并启用后自动工作。它会在结果装饰阶段介入，对用户透明。
 
-请参阅官方文档 [宝塔面板部署](https://astrbot.app/deploy/astrbot/btpanel.html) 。
+验证人设/上下文是否被带上：观察调试日志中如下行：
 
-#### 1Panel 部署
+- “上下文长度: N, 系统提示词存在: True/False, 上下文含system: True/False，示例: …”
+- 若“上下文含system: True”，说明历史对话里有人设消息；否则若系统提示词存在，则会补位 system_prompt。
 
-AstrBot 已由 1Panel 官方上架至 1Panel 面板。
+若启用“调试：输出上下文预览”，还会看到类似：
 
-请参阅官方文档 [1Panel 部署](https://astrbot.app/deploy/astrbot/1panel.html) 。
-
-#### 在 雨云 上部署
-
-AstrBot 已由雨云官方上架至云应用平台，可一键部署。
-
-[![Deploy on RainYun](https://rainyun-apps.cn-nb1.rains3.com/materials/deploy-on-rainyun-en.svg)](https://app.rainyun.com/apps/rca/store/5994?ref=NjU1ODg0)
-
-#### 在 Replit 上部署
-
-社区贡献的部署方式。
-
-[![Run on Repl.it](https://repl.it/badge/github/Soulter/AstrBot)](https://repl.it/github/Soulter/AstrBot)
-
-#### Windows 一键安装器部署
-
-请参阅官方文档 [使用 Windows 一键安装器部署 AstrBot](https://astrbot.app/deploy/astrbot/windows.html) 。
-
-#### CasaOS 部署
-
-社区贡献的部署方式。
-
-请参阅官方文档 [CasaOS 部署](https://astrbot.app/deploy/astrbot/casaos.html) 。
-
-#### 手动部署
-
-> 推荐使用 `uv`。
-
-首先，安装 uv：
-
-```bash
-pip install uv
+```
+上下文预览(最近 3 条):
+#1 [user] ……
+#2 [assistant] ……
+#3 [user] ……
 ```
 
-通过 Git Clone 安装 AstrBot：
+当开启“强制使用 Provider 人设”时，日志会提示“已强制覆盖人设：移除 X 条历史 system 消息”，并无条件传入 Provider 的 system_prompt。
 
-```bash
-git clone https://github.com/AstrBotDevs/AstrBot && cd AstrBot
-uv run main.py
-```
+提示：若希望始终携带固定人设，建议在 Provider 中配置 system_prompt；若人设写在会话开头（system 角色），插件会自动沿用。
 
-或者请参阅官方文档 [通过源码部署 AstrBot](https://astrbot.app/deploy/astrbot/cli.html) 。
+## ❓ 常见问题/注意事项
 
-## ⚡ 消息平台支持情况
+- 插件只会在检测到回复异常时才触发重试，不会影响正常对话。
+- 某些极端情况下，LLM 服务端问题可能无法完全避免，遇到多次失败时会显示兜底提示。
+- 所有配置均可通过 WebUI 修改，无需手动编辑 config 文件或改代码。
+- 建议开启调试日志以便排查问题（如需详细上下文信息）。
+- 如果插件无效，建议先检查 AstrBot 版本和插件是否正确启用。
 
-| 平台    | 支持性 |
-| -------- | ------- |
-| QQ(官方机器人接口) | ✔    |
-| QQ(OneBot)      | ✔    |
-| Telegram   | ✔    |
-| 企业微信    | ✔    |
-| 微信客服    | ✔    |
-| 微信公众号    | ✔    |
-| 飞书   | ✔    |
-| 钉钉   | ✔    |
-| Slack   | ✔    |
-| Discord   | ✔    |
-| [KOOK](https://github.com/wuyan1003/astrbot_plugin_kook_adapter)   | ✔    |
-| [VoceChat](https://github.com/HikariFroya/astrbot_plugin_vocechat)   | ✔    |
-| 微信对话开放平台 | 🚧    |
-| WhatsApp   | 🚧    |
-| 小爱音响   | 🚧    |
+## 🤝 贡献
 
-## ⚡ 提供商支持情况
+欢迎通过提交 Pull Request 或 Issue 来为本项目做出贡献，您的 Star🌟 是对我最大的鼓励！！
 
-| 名称    | 支持性 | 类型 | 备注 |
-| -------- | ------- | ------- | ------- |
-| OpenAI API | ✔    | 文本生成 | 也支持 DeepSeek、Gemini、Kimi、xAI 等兼容 OpenAI API 的服务 |
-| Claude API | ✔    | 文本生成 |  |
-| Google Gemini API | ✔    | 文本生成 |  |
-| Dify | ✔    | LLMOps |  |
-| 阿里云百炼应用 | ✔    | LLMOps |  |
-| Ollama | ✔    | 模型加载器 | 本地部署 DeepSeek、Llama 等开源语言模型 |
-| LM Studio | ✔    | 模型加载器 | 本地部署 DeepSeek、Llama 等开源语言模型 |
-| LLMTuner | ✔    | 模型加载器 | 本地加载 lora 等微调模型 |
-| [优云智算](https://www.compshare.cn/?ytag=GPU_YY-gh_astrbot&referral_code=FV7DcGowN4hB5UuXKgpE74) | ✔    | 模型 API 及算力服务平台 |  |
-| [302.AI](https://share.302.ai/rr1M3l) | ✔    | 模型 API 服务平台 |  |
-| 硅基流动 | ✔    | 模型 API 服务平台 |  |
-| PPIO 派欧云 | ✔    | 模型 API 服务平台 |  |
-| OneAPI | ✔    | LLM 分发系统 |  |
-| Whisper | ✔    | 语音转文本 | 支持 API、本地部署 |
-| SenseVoice | ✔    | 语音转文本 | 本地部署 |
-| OpenAI TTS API | ✔    | 文本转语音 |  |
-| GSVI | ✔    | 文本转语音 | GPT-Sovits-Inference |
-| GPT-SoVITs | ✔    | 文本转语音 | GPT-Sovits-Inference |
-| FishAudio | ✔    | 文本转语音 | GPT-Sovits 作者参与的项目 |
-| Edge TTS | ✔    | 文本转语音 | Edge 浏览器的免费 TTS |
-| 阿里云百炼 TTS | ✔    | 文本转语音 |  |
-| Azure TTS | ✔    | 文本转语音 | Microsoft Azure TTS |
+## 📄 开源许可证
 
+本项目基于 [MIT License](LICENSE) 开源。
 
-## ❤️ 贡献
+## ✍️ 作者
 
-欢迎任何 Issues/Pull Requests！只需要将你的更改提交到此项目 ：)
-
-### 如何贡献
-
-你可以通过查看问题或帮助审核 PR（拉取请求）来贡献。任何问题或 PR 都欢迎参与，以促进社区贡献。当然，这些只是建议，你可以以任何方式进行贡献。对于新功能的添加，请先通过 Issue 讨论。
-
-### 开发环境
-
-AstrBot 使用 `ruff` 进行代码格式化和检查。
-
-```bash
-git clone https://github.com/Soulter/AstrBot
-pip install pre-commit
-pre-commit install
-```
-
-## 🌟 支持
-
-- Star 这个项目！
-- 在[爱发电](https://afdian.com/a/soulter)支持我！
-
-## ✨ Demo
-
-<details><summary>👉 点击展开多张 Demo 截图 👈</summary>
-
-<div align='center'>
-
-<img src="https://github.com/user-attachments/assets/4ee688d9-467d-45c8-99d6-368f9a8a92d8" width="600">
-
-_✨基于 Docker 的沙箱化代码执行器（Beta 测试）✨_
-
-<img src="https://github.com/user-attachments/assets/0378f407-6079-4f64-ae4c-e97ab20611d2" height=500>
-
-_✨ 多模态、网页搜索、长文本转图片（可配置） ✨_
-
-<img src="https://github.com/user-attachments/assets/e137a9e1-340a-4bf2-bb2b-771132780735" height=150>
-<img src="https://github.com/user-attachments/assets/480f5e82-cf6a-4955-a869-0d73137aa6e1" height=150>
-
-_✨ 插件系统——部分插件展示 ✨_
-
-<img src="https://github.com/user-attachments/assets/0cdbf564-2f59-4da5-b524-ce0e7ef3d978" width=600>
-
-_✨ WebUI ✨_
-
-</div>
-
-</details>
-
-
-## ❤️ Special Thanks
-
-特别感谢所有 Contributors 和插件开发者对 AstrBot 的贡献 ❤️
-
-<a href="https://github.com/AstrBotDevs/AstrBot/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=AstrBotDevs/AstrBot" />
-</a>
-
-此外，本项目的诞生离不开以下开源项目：
-
-- [NapNeko/NapCatQQ](https://github.com/NapNeko/NapCatQQ) - 伟大的猫猫框架
-- [wechatpy/wechatpy](https://github.com/wechatpy/wechatpy)
-
-## ⭐ Star History
-
-> [!TIP] 
-> 如果本项目对您的生活 / 工作产生了帮助，或者您关注本项目的未来发展，请给项目 Star，这是我维护这个开源项目的动力 <3
-
-<div align="center">
-    
-[![Star History Chart](https://api.star-history.com/svg?repos=soulter/astrbot&type=Date)](https://star-history.com/#soulter/astrbot&Date)
-
-</div>
-
-![10k-star-banner-credit-by-kevin](https://github.com/user-attachments/assets/c97fc5fb-20b9-4bc8-9998-c20b930ab097)
-
-
-_私は、高性能ですから!_
-
+- [@muyouzhi6](https://github.com/muyouzhi6)
+- [@长安某](https://github.com/ChanganZhou)
