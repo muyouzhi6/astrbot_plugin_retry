@@ -15,6 +15,95 @@ from astrbot.api.star import Context, Star, register
     "2.6.3"
 )
 class IntelligentRetry(Star):
+    def __init__(self, context: Context, config: AstrBotConfig):
+        super().__init__(context)
+        # 基础配置
+        self.max_attempts = config.get('max_attempts', 3)
+        self.retry_delay = config.get('retry_delay', 2)
+        self.retry_delay_mode = config.get('retry_delay_mode', 'exponential').lower().strip()
+        default_keywords = "api 返回的内容为空\nAPI 返回的 completion 由于内容安全过滤被拒绝(非 AstrBot)\n调用失败"
+        keywords_str = config.get('error_keywords', default_keywords)
+        self.error_keywords = [k.strip().lower() for k in keywords_str.split('\n') if k.strip()]
+
+        # 人设控制
+        self.always_use_system_prompt = config.get('always_use_system_prompt', True)
+        self.fallback_system_prompt_text = config.get('fallback_system_prompt', '').strip()
+
+        # 基于状态码的重试控制
+        retryable_codes_default = "400\n429\n502\n503\n504"
+        non_retryable_codes_default = ""
+        retryable_codes_str = config.get('retryable_status_codes', retryable_codes_default)
+        non_retryable_codes_str = config.get('non_retryable_status_codes', non_retryable_codes_default)
+
+        def _parse_codes(s: str):
+            codes = set()
+            for line in s.split('\n'):
+                t = line.strip()
+                if t.isdigit():
+                    try:
+                        codes.add(int(t))
+                    except Exception:
+                        pass
+            return codes
+
+        self.retryable_status_codes = _parse_codes(retryable_codes_str)
+        self.non_retryable_status_codes = _parse_codes(non_retryable_codes_str)
+
+        # 上下文预览日志（仅用于调试）
+        self.log_context_preview = bool(config.get('log_context_preview', False))
+        try:
+            self.context_preview_last_n = max(0, int(config.get('context_preview_last_n', 3)))
+        except Exception:
+            self.context_preview_last_n = 3
+        try:
+            self.context_preview_max_chars = max(20, int(config.get('context_preview_max_chars', 120)))
+        except Exception:
+            self.context_preview_max_chars = 120
+
+        # 兜底回复
+        self.fallback_reply = config.get('fallback_reply', "抱歉，刚才遇到服务波动，我已自动为你重试多次仍未成功。请稍后再试或换个说法。")
+
+        # 截断重试配置
+        self.enable_truncation_retry = bool(config.get('enable_truncation_retry', False))
+        # 合法结尾字符集/正则，支持自定义，默认覆盖常见标点、字母、数字、文件后缀、网址
+        self.truncation_valid_tail_pattern = config.get(
+            'truncation_valid_tail_pattern',
+            r'[。！？!?,.\w\d\u4e00-\u9fa5]$|\.(com|cn|org|net|io|ai|pdf|jpg|png|jpeg|gif|mp3|mp4|txt|zip|tar|gz|html|htm)$|https?://[\w\.-]+$'
+        )
+
+        logger.info(
+            f"已加载 [IntelligentRetry] 插件 v2.6.3, "
+            f"将在LLM回复无效时自动重试 (最多 {self.max_attempts} 次)，保持完整上下文和人设。"
+        )
+
+    def _is_truncated(self, text: str) -> bool:
+        """
+        检查回复是否疑似被截断：
+        - 结尾不是常见标点、字母、数字、文件后缀、网址等
+        - 可自定义正则
+        """
+        import re
+        if not text or not text.strip():
+            return False
+        # 只检测最后一行（防止多段回复）
+        last_line = text.strip().splitlines()[-1]
+        if re.search(self.truncation_valid_tail_pattern, last_line, re.IGNORECASE):
+            return False
+        return True
+    def _is_truncated(self, text: str) -> bool:
+        """
+        检查回复是否疑似被截断：
+        - 结尾不是常见标点、字母、数字、文件后缀、网址等
+        - 可自定义正则
+        """
+        import re
+        if not text or not text.strip():
+            return False
+        # 只检测最后一行（防止多段回复）
+        last_line = text.strip().splitlines()[-1]
+        if re.search(self.truncation_valid_tail_pattern, last_line, re.IGNORECASE):
+            return False
+        return True
     """
     一个AstrBot插件，在检测到LLM回复为空或返回包含特定关键词的错误文本时，
     自动进行多次重试，并完整保持原有的上下文和人设。
@@ -261,18 +350,24 @@ class IntelligentRetry(Star):
             return True
         
         # 检查是否有实际内容
-        has_content = any(
-            (isinstance(c, Comp.Plain) and c.text.strip())
-            or not isinstance(c, Comp.Plain)  # 任何非Plain类型的消息段都算作有内容
-            for c in result.chain
-        )
-        
+        # 兼容 chain 为空、仅有 Plain 且 text 为空等多种情况
+        has_content = False
+        if hasattr(result, 'chain'):
+            for c in result.chain:
+                # 任何非Plain类型的消息段都算作有内容
+                if not isinstance(c, Comp.Plain):
+                    has_content = True
+                    break
+                # Plain类型但text非空
+                if hasattr(c, 'text') and str(c.text).strip():
+                    has_content = True
+                    break
         if not has_content:
             logger.debug("检测到空回复，需要重试")
             return True
         
-    # 检查是否包含错误关键词或可重试状态码
-        message_str = result.get_plain_text()
+        # 检查是否包含错误关键词或可重试状态码
+        message_str = result.get_plain_text() if hasattr(result, 'get_plain_text') else ''
         if message_str:
             code = self._extract_status_code(message_str)
             if code is not None:
@@ -287,7 +382,10 @@ class IntelligentRetry(Star):
                 if keyword in lower_message_str:
                     logger.debug(f"检测到错误关键词 '{keyword}'，需要重试")
                     return True
-        
+            # 检查截断重试
+            if self.enable_truncation_retry and self._is_truncated(message_str):
+                logger.info(f"检测到回复疑似被截断，触发截断重试。内容结尾: {message_str[-20:]}")
+                return True
         return False
 
     @filter.on_decorating_result(priority=-1)
@@ -320,7 +418,7 @@ class IntelligentRetry(Star):
 
         logger.info("检测到需要重试的情况，开始重试流程")
 
-        # 进行重试（带指数退避）
+        # 进行重试（支持固定间隔/指数退避）
         delay = max(0, int(self.retry_delay))
         for attempt in range(1, self.max_attempts + 1):
             logger.info(f"第 {attempt}/{self.max_attempts} 次重试...")
@@ -331,8 +429,8 @@ class IntelligentRetry(Star):
                 logger.warning(f"第 {attempt} 次重试返回空结果")
                 if attempt < self.max_attempts and delay > 0:
                     await asyncio.sleep(delay)
-                    # 指数退避，最高不超过 30 秒
-                    delay = min(delay * 2, 30)
+                    if self.retry_delay_mode == 'exponential':
+                        delay = min(delay * 2, 30)
                 continue
 
             new_text = new_response.completion_text.strip()
@@ -360,12 +458,26 @@ class IntelligentRetry(Star):
                 logger.warning(f"第 {attempt} 次重试仍包含错误或为空: {new_text[:100]}...")
                 if attempt < self.max_attempts and delay > 0:
                     await asyncio.sleep(delay)
-                    delay = min(delay * 2, 30)
+                    if self.retry_delay_mode == 'exponential':
+                        delay = min(delay * 2, 30)
 
         logger.error(f"所有 {self.max_attempts} 次重试均失败")
-        # 若配置了兜底回复，则发送友好提示；否则维持清空并停止
+        # 若配置了兜底回复，则发送友好提示，且保证结构与正常流程一致
         if self.fallback_reply and self.fallback_reply.strip():
-            event.set_result(event.plain_result(self.fallback_reply.strip()))
+            try:
+                event.set_result(event.plain_result(self.fallback_reply.strip()))
+            except Exception:
+                # 兼容极端情况，直接设置为 Result 对象
+                class Plain:
+                    def __init__(self, text):
+                        self.text = text
+                class Result:
+                    def __init__(self, text):
+                        self.chain = [Plain(text)]
+                        self._text = text
+                    def get_plain_text(self):
+                        return self._text
+                event.set_result(Result(self.fallback_reply.strip()))
         else:
             event.clear_result()
             event.stop_event()
