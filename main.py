@@ -68,8 +68,7 @@ class IntelligentRetry(Star):
         # 合法结尾字符集/正则，支持自定义，默认覆盖常见标点、字母、数字、文件后缀、网址
         self.truncation_valid_tail_pattern = config.get(
             'truncation_valid_tail_pattern',
-            r'[(?:[。？！…》”’】』）～\.?!\"'\)\]\}\w\u4e00-\u9fa5]|\.{3})$|(?:\.(?:com|cn|org|net|gov|edu|io|ai|dev|app|xyz|top|me|tv|pdf|docx?|xlsx?|pptx?|jpe?g|png|gif|mp3|mp4|mov|avi|wav|zip|rar|tar|gz|html?|js|css|md|txt))$|(?:https?:\/\/[a-zA-Z0-9\-\./_#?=&%]+)$]+$'
-        )
+            r"(?:[。？！…》”’】』）～\.?!\"'\)\]\}\w\u4e00-\u9fa5]|\.{3})$|(?:\.(?:com|cn|org|net|gov|edu|io|ai|dev|app|xyz|top|me|tv|pdf|docx?|xlsx?|pptx?|jpe?g|png|gif|mp3|mp4|mov|avi|wav|zip|rar|tar|gz|html?|js|css|md|txt))$|(?:https?:\/\/[a-zA-Z0-9\-\./_#?=&%]+)$"
 
         logger.info(
             f"已加载 [IntelligentRetry] 插件 v2.6.3, "
@@ -122,8 +121,7 @@ class IntelligentRetry(Star):
         # 合法结尾字符集/正则，支持自定义，默认覆盖常见标点、字母、数字、文件后缀、网址
         self.truncation_valid_tail_pattern = config.get(
             'truncation_valid_tail_pattern',
-            r'[(?:[。？！…》”’】』）～\.?!\"'\)\]\}\w\u4e00-\u9fa5]|\.{3})$|(?:\.(?:com|cn|org|net|gov|edu|io|ai|dev|app|xyz|top|me|tv|pdf|docx?|xlsx?|pptx?|jpe?g|png|gif|mp3|mp4|mov|avi|wav|zip|rar|tar|gz|html?|js|css|md|txt))$|(?:https?:\/\/[a-zA-Z0-9\-\./_#?=&%]+)$]+$'
-        )
+            r"(?:[。？！…》”’】』）～\.?!\"'\)\]\}\w\u4e00-\u9fa5]|\.{3})$|(?:\.(?:com|cn|org|net|gov|edu|io|ai|dev|app|xyz|top|me|tv|pdf|docx?|xlsx?|pptx?|jpe?g|png|gif|mp3|mp4|mov|avi|wav|zip|rar|tar|gz|html?|js|css|md|txt))$|(?:https?:\/\/[a-zA-Z0-9\-\./_#?=&%]+)$"
 
         logger.info(
             f"已加载 [IntelligentRetry] 插件 v2.6.3, "
