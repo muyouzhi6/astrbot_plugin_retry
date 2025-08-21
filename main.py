@@ -12,7 +12,7 @@ from astrbot.api.star import Context, Star, register
     "intelligent_retry",
     "木有知 & 长安某",
     "当LLM回复为空或包含特定错误关键词时，自动进行多次重试，保持完整上下文和人设",
-    "2.6.4"
+    "2.6.3"
 )
 class IntelligentRetry(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -69,6 +69,8 @@ class IntelligentRetry(Star):
         self.truncation_valid_tail_pattern = config.get(
             'truncation_valid_tail_pattern',
             r'[。！？!?,.\w\d\u4e00-\u9fa5]$|\.(com|cn|org|net|io|ai|pdf|jpg|png|jpeg|gif|mp3|mp4|txt|zip|tar|gz|html|htm)$|https?://[\w\.-]+$'
+        )
+
         logger.info(
             f"已加载 [IntelligentRetry] 插件 v2.6.3, "
             f"将在LLM回复无效时自动重试 (最多 {self.max_attempts} 次)，保持完整上下文和人设。"
@@ -121,6 +123,7 @@ class IntelligentRetry(Star):
         self.truncation_valid_tail_pattern = config.get(
             'truncation_valid_tail_pattern',
             r'[。！？!?,.\w\d\u4e00-\u9fa5]$|\.(com|cn|org|net|io|ai|pdf|jpg|png|jpeg|gif|mp3|mp4|txt|zip|tar|gz|html|htm)$|https?://[\w\.-]+$'
+        )
 
         logger.info(
             f"已加载 [IntelligentRetry] 插件 v2.6.3, "
