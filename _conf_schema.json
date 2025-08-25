@@ -11,24 +11,6 @@
     "hint": "当LLM回复无效时，插件将尝试重新请求的最大次数。设置为0则禁用重试。",
     "default": 3
   },
-  "log_context_preview": {
-    "description": "调试：在重试时输出最近 N 条上下文的简要预览",
-    "type": "bool",
-    "hint": "仅用于调试，输出内容为裁剪后的文本，避免泄露过多信息。",
-    "default": false
-  },
-  "context_preview_last_n": {
-    "description": "上下文预览的条目数",
-    "type": "int",
-    "hint": "仅在启用上下文预览时生效，表示显示最近 N 条历史。",
-    "default": 3
-  },
-  "context_preview_max_chars": {
-    "description": "单条预览的最大字符数",
-    "type": "int",
-    "hint": "仅在启用上下文预览时生效，用于裁剪每条预览文本长度。",
-    "default": 120
-  },
   "retry_delay": {
     "description": "重试间隔（秒）",
     "type": "int",
@@ -41,12 +23,6 @@
     "hint": "当LLM的回复中包含这些关键词时，将触发重试。请每行输入一个关键词，不区分大小写。",
     "default": "api 返回的内容为空\nAPI 返回的 completion 由于内容安全过滤被拒绝(非 AstrBot)"
   },
-  "always_use_system_prompt": {
-    "description": "强制使用Provider的人设覆盖上下文中的system消息",
-    "type": "bool",
-    "hint": "开启后，重试时会移除上下文中的所有system消息，并统一使用Provider的system_prompt，避免异常/污染人设。",
-    "default": true
-  },
   "retryable_status_codes": {
     "description": "允许重试的HTTP状态码(每行一个)",
     "type": "text",
@@ -57,12 +33,6 @@
     "description": "禁止重试的HTTP状态码(每行一个)",
     "type": "text",
     "hint": "当错误文本中包含这些状态码时，将直接跳过重试。留空表示不限制。",
-    "default": ""
-  },
-  "fallback_system_prompt": {
-    "description": "备用人设(system prompt)",
-    "type": "text",
-    "hint": "当 Provider 未提供 system_prompt 且开启了“强制使用Provider人设”时，使用此文本作为人设。可留空。",
     "default": ""
   },
 
@@ -125,7 +95,7 @@
   "concurrent_retry_threshold": {
     "description": "并发重试触发阈值",
     "type": "int",
-    "hint": "在第几次重试失败后启动并发模式。例如设为1表示第1次重试失败后启动并发，设为2表示前2次重试失败后启动并发。",
+    "hint": "在第几次重试失败后启动并发模式。例如设为1表示第1次重试失败后启动并发，设为2表示前2次重试失败后启动并发。设置为0则跳过顺序重试，直接使用并发模式。",
     "default": 1
   },
   "concurrent_retry_count": {
