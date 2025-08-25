@@ -473,8 +473,15 @@ class IntelligentRetry(Star):
         if not self.enable_concurrent_retry:
             return await self._sequential_retry_sequence(event, request_key, self.max_attempts, delay)
         
-        # 并发重试模式：先顺序重试到阈值，然后并发重试
+        # 并发重试模式：根据阈值决定是否跳过顺序重试
+        if self.concurrent_retry_threshold == 0:
+            # 阈值为0：直接启用并发重试，使用全部重试次数
+            logger.info("配置为直接并发重试模式，跳过顺序重试阶段")
+            return await self._concurrent_retry_sequence(event, request_key, self.max_attempts)
+        
+        # 混合重试模式：先顺序重试到阈值，然后并发重试
         sequential_attempts = min(self.concurrent_retry_threshold, self.max_attempts)
+        logger.info(f"混合重试模式：先 {sequential_attempts} 次顺序，后并发")
         
         # 第一阶段：顺序重试
         if sequential_attempts > 0:
