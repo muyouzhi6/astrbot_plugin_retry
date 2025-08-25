@@ -78,5 +78,66 @@
     "type": "text",
     "hint": "当达到最大重试次数仍失败时，发送给用户的一段友好提示。留空则不发送消息。",
     "default": "抱歉，刚才遇到服务波动，我已自动为你重试多次仍未成功。请稍后再试或换个说法。"
+  },
+  "truncation_detection_mode": {
+    "description": "截断检测模式",
+    "type": "string",
+    "hint": "选择截断检测的复杂度。basic=基础字符检测，enhanced=多层智能检测，strict=严格模式。",
+    "default": "enhanced",
+    "enum": ["basic", "enhanced", "strict"]
+  },
+  "check_structural_integrity": {
+    "description": "启用结构完整性检测",
+    "type": "bool",
+    "hint": "检测括号、引号等结构是否匹配，有助于发现被截断的代码或格式化内容。",
+    "default": true
+  },
+  "check_content_type_specific": {
+    "description": "启用内容类型自适应检测",
+    "type": "bool",
+    "hint": "根据内容类型（代码、列表、表格等）使用不同的截断检测策略。",
+    "default": true
+  },
+  "min_reasonable_length": {
+    "description": "合理回复最小长度",
+    "type": "int",
+    "hint": "短于此长度的回复一般不被认为是截断（除非明显不完整）。",
+    "default": 10
+  },
+  "code_block_detection": {
+    "description": "启用代码块检测",
+    "type": "bool",
+    "hint": "检测Markdown代码块是否完整（```配对）。",
+    "default": true
+  },
+  "quote_matching_detection": {
+    "description": "启用引号匹配检测",
+    "type": "bool",
+    "hint": "检测引号是否配对，有助于发现被截断的字符串。",
+    "default": true
+  },
+  "enable_concurrent_retry": {
+    "description": "启用并发重试",
+    "type": "bool",
+    "hint": "开启后，在第一次重试失败后将使用并发模式进行剩余重试，可显著减少响应延迟但会增加token消耗。",
+    "default": false
+  },
+  "concurrent_retry_threshold": {
+    "description": "并发重试触发阈值",
+    "type": "int",
+    "hint": "在第几次重试失败后启动并发模式。例如设为1表示第1次重试失败后启动并发，设为2表示前2次重试失败后启动并发。",
+    "default": 1
+  },
+  "concurrent_retry_count": {
+    "description": "并发请求数量",
+    "type": "int",
+    "hint": "并发模式下同时发起的请求数量。数量越多响应越快但token消耗越大，建议2-3个。",
+    "default": 2
+  },
+  "concurrent_retry_timeout": {
+    "description": "并发重试超时时间(秒)",
+    "type": "int",
+    "hint": "等待并发请求完成的最大时间，超时后返回已获得的最佳结果。",
+    "default": 30
   }
 }
