@@ -6,6 +6,9 @@
 
 当前版本：2.6.4
 
+<img width="1024" height="220" alt="PixPin_2025-08-25_18-39-39" src="https://github.com/user-attachments/assets/cd60372a-617d-4d98-a388-48e0d7610893" />
+
+
 ## ✨ 功能特性
   
 - **可选启用 Gemini/LLM 截断重试**：检测回复结尾异常时自动重试，适配 Gemini 等模型常见“戛然而止”问题。
