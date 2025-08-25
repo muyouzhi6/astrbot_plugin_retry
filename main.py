@@ -15,8 +15,8 @@ from astrbot.api.provider import ProviderRequest
 @register(
     "intelligent_retry",
     "木有知 & 长安某 (优化增强版)",
-    "当LLM回复为空或包含特定错误关键词时，自动进行多次重试，保持完整上下文和人设。新增智能截断检测与并发重试功能",
-    "2.9.0"
+    "当LLM回复为空或包含特定错误关键词时，自动进行多次重试，使用原始请求参数确保完整重试。新增智能截断检测与并发重试功能，简化架构提升性能",
+    "2.9.1"
 )
 class IntelligentRetry(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -29,8 +29,8 @@ class IntelligentRetry(Star):
         self._parse_config(config)
         
         logger.info(
-            f"已加载 [IntelligentRetry] 插件 v2.9.0 (优化增强版), "
-            f"将在LLM回复无效时自动重试 (最多 {self.max_attempts} 次)，保持完整上下文和人设。"
+            f"已加载 [IntelligentRetry] 插件 v2.9.1 (优化增强版), "
+            f"将在LLM回复无效时自动重试 (最多 {self.max_attempts} 次)，使用原始请求参数确保完整重试。"
             f"截断检测模式: {self.truncation_detection_mode}, 并发重试: {'启用' if self.enable_concurrent_retry else '禁用'}"
         )
     
@@ -46,18 +46,9 @@ class IntelligentRetry(Star):
         keywords_str = config.get('error_keywords', default_keywords)
         self.error_keywords = [k.strip().lower() for k in keywords_str.split('\n') if k.strip()]
 
-        # 人设控制
-        self.always_use_system_prompt = config.get('always_use_system_prompt', True)
-        self.fallback_system_prompt_text = config.get('fallback_system_prompt', '').strip()
-
         # 基于状态码的重试控制
         self.retryable_status_codes = self._parse_status_codes(config.get('retryable_status_codes', "400\n429\n502\n503\n504"))
         self.non_retryable_status_codes = self._parse_status_codes(config.get('non_retryable_status_codes', ""))
-
-        # 上下文预览日志（仅用于调试）
-        self.log_context_preview = bool(config.get('log_context_preview', False))
-        self.context_preview_last_n = max(0, int(config.get('context_preview_last_n', 3)))
-        self.context_preview_max_chars = max(20, int(config.get('context_preview_max_chars', 120)))
 
         # 兜底回复
         self.fallback_reply = config.get('fallback_reply', "抱歉，刚才遇到服务波动，我已自动为你重试多次仍未成功。请稍后再试或换个说法。")
@@ -442,18 +433,8 @@ class IntelligentRetry(Star):
                 'func_tool': stored_params['func_tool'],
             }
             
-            # 处理系统提示词
-            if self.always_use_system_prompt:
-                # 强制使用Provider的system_prompt或fallback
-                system_prompt = None
-                if hasattr(provider, "system_prompt") and provider.system_prompt:
-                    system_prompt = provider.system_prompt
-                elif self.fallback_system_prompt_text:
-                    system_prompt = self.fallback_system_prompt_text
-                
-                if system_prompt:
-                    kwargs['system_prompt'] = system_prompt
-            elif stored_params['system_prompt']:
+            # 使用存储的原始system_prompt
+            if stored_params['system_prompt']:
                 kwargs['system_prompt'] = stored_params['system_prompt']
 
             logger.debug(f"正在使用存储的参数进行重试... Prompt: '{stored_params['prompt']}'")
