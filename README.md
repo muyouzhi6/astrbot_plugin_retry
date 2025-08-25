@@ -4,7 +4,7 @@
 
 一个为 [Astrbot](https://github.com/AstrBotDevs/AstrBot) 设计的增强型插件，专门解决与大语言模型（LLM）交互时常见的不稳定问题（如空回复、对话截断（常见于gemini2.5pro）等）。当 LLM 响应为空或出错时，会自动检测并智能重试，减少“无响应”或错误提示，让你的对话体验更顺畅、更省心。2.8.0版本新增多线程重试，截断检测功能，推荐更新。
 
-当前版本：2.6.4
+当前版本：2.9.0
 
 <img width="1024" height="220" alt="PixPin_2025-08-25_18-39-39" src="https://github.com/user-attachments/assets/cd60372a-617d-4d98-a388-48e0d7610893" />
 
