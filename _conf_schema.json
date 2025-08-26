@@ -109,5 +109,23 @@
     "type": "int",
     "hint": "等待并发请求完成的最大时间，超时后返回已获得的最佳结果。",
     "default": 30
+  },
+  "enable_exponential_growth": {
+    "description": "启用指数增长并发",
+    "type": "bool",
+    "hint": "开启后，后续批次的并发数将指数增长(2,4,8...)，但有上限控制。关闭则保持固定并发数。",
+    "default": true
+  },
+  "max_concurrent_multiplier": {
+    "description": "最大并发倍数",
+    "type": "int",
+    "hint": "指数增长的上限倍数，最大并发数=基础并发数×倍数。建议2-8之间。",
+    "default": 4
+  },
+  "absolute_concurrent_limit": {
+    "description": "绝对并发上限",
+    "type": "int",
+    "hint": "无论如何计算，并发数都不会超过此值。建议5-20之间。",
+    "default": 10
   }
 }
