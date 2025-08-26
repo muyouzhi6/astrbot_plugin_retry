@@ -16,7 +16,7 @@ from astrbot.api.provider import ProviderRequest
     "intelligent_retry",
     "木有知 & 长安某 (优化增强版)",
     "当LLM回复为空或包含特定错误关键词时，自动进行多次重试，使用原始请求参数确保完整重试。新增智能截断检测与并发重试功能，简化架构提升性能",
-    "2.9.3"
+    "2.9.4"
 )
 class IntelligentRetry(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
