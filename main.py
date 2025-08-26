@@ -42,7 +42,11 @@ class IntelligentRetry(Star):
         self.retry_delay_mode = config.get('retry_delay_mode', 'exponential').lower().strip()
         
         # 错误关键词配置
-        default_keywords = "api 返回的内容为空\nAPI 返回的 completion 由于内容安全过滤被拒绝(非 AstrBot)\n调用失败"
+        default_keywords = ("api 返回的内容为空\n"
+                           "API 返回的 completion 由于内容安全过滤被拒绝(非 AstrBot)\n"
+                           "调用失败\n"
+                           "[TRUNCATED_BY_LENGTH]\n"
+                           "达到最大长度限制而被截断")
         keywords_str = config.get('error_keywords', default_keywords)
         self.error_keywords = [k.strip().lower() for k in keywords_str.split('\n') if k.strip()]
 
@@ -123,8 +127,18 @@ class IntelligentRetry(Star):
         return f"{session_info}_{message_id}_{content_hash}"
 
     @filter.on_llm_request()
-    async def store_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
+    async def store_llm_request(self, event: AstrMessageEvent, *args, **kwargs):
         """存储LLM请求参数（借鉴v2版本的双钩子机制）"""
+        # 从args中安全提取ProviderRequest
+        req = args[0] if args and len(args) > 0 else None
+        if req is None:
+            logger.warning("store_llm_request: No ProviderRequest found in args")
+            return
+            
+        # 检查类型 - 使用鸭子类型检查而不是isinstance以避免导入问题
+        if not hasattr(req, 'prompt') or not hasattr(req, 'contexts'):
+            logger.warning("store_llm_request: Expected ProviderRequest-like object but got different type")
+            return
         request_key = self._get_request_key(event)
         
         # 获取图片URL
@@ -145,8 +159,33 @@ class IntelligentRetry(Star):
         
         logger.debug(f"已存储LLM请求参数: {request_key}")
 
-    def _is_truncated(self, text: str) -> bool:
-        """主入口方法：多层截断检测"""
+    def _is_truncated(self, text_or_response) -> bool:
+        """主入口方法：多层截断检测，支持文本和LLMResponse对象"""
+        
+        # 新增：处理LLMResponse对象
+        if hasattr(text_or_response, 'completion_text'):
+            # 这是一个LLMResponse对象
+            resp = text_or_response
+            text = resp.completion_text or ""
+            
+            # 检查截断标记
+            if "[TRUNCATED_BY_LENGTH]" in text:
+                logger.debug("LLMResponse对象中检测到截断标记")
+                return True
+                
+            # 检查raw_completion
+            if (hasattr(resp, 'raw_completion') and 
+                resp.raw_completion and 
+                hasattr(resp.raw_completion, 'choices') and 
+                resp.raw_completion.choices and
+                getattr(resp.raw_completion.choices[0], 'finish_reason', None) == 'length'):
+                logger.debug("LLMResponse对象的raw_completion检测到length截断")
+                return True
+        else:
+            # 这是普通文本
+            text = text_or_response
+        
+        # 继续现有的检测逻辑...
         if not text or not text.strip():
             return False
         
@@ -415,6 +454,11 @@ class IntelligentRetry(Star):
         # 检查错误关键词和状态码
         message_str = result.get_plain_text() if hasattr(result, 'get_plain_text') else ''
         if message_str:
+            # 检查是否包含截断标记
+            if "[TRUNCATED_BY_LENGTH]" in message_str:
+                logger.debug("检测到截断标记，需要重试")
+                return True
+                
             # 状态码检测
             code = self._extract_status_code(message_str)
             if code is not None:
@@ -741,8 +785,18 @@ class IntelligentRetry(Star):
             logger.debug("未配置兜底回复，事件已终止")
 
     @filter.on_llm_response(priority=10)
-    async def retry_on_llm_response(self, event: AstrMessageEvent, resp: LLMResponse):
+    async def retry_on_llm_response(self, event: AstrMessageEvent, *args, **kwargs):
         """在LLM响应阶段进行重试检测和处理"""
+        # 从args中安全提取LLMResponse
+        resp = args[0] if args and len(args) > 0 else None
+        if resp is None:
+            logger.warning("retry_on_llm_response: No LLMResponse found in args")
+            return
+            
+        # 检查类型 - 使用鸭子类型检查而不是isinstance以避免导入问题
+        if not hasattr(resp, 'completion_text'):
+            logger.warning("retry_on_llm_response: Expected LLMResponse-like object but got different type")
+            return
         # 如果禁用重试则直接返回
         if self.max_attempts <= 0:
             return
@@ -756,7 +810,23 @@ class IntelligentRetry(Star):
         # 这里我们需要将LLMResponse转换为类似result的格式来复用现有逻辑
         should_retry = False
         
-        if not resp.completion_text or not resp.completion_text.strip():
+        # 检测底层provider的截断标记
+        if resp.completion_text and "[TRUNCATED_BY_LENGTH]" in resp.completion_text:
+            should_retry = True
+            logger.info("检测到provider层面的截断标记，需要重试")
+            # 清理截断标记
+            resp.completion_text = resp.completion_text.replace("[TRUNCATED_BY_LENGTH]", "").strip()
+        
+        # 检查raw_completion的finish_reason
+        elif (hasattr(resp, 'raw_completion') and 
+              resp.raw_completion and 
+              hasattr(resp.raw_completion, 'choices') and 
+              resp.raw_completion.choices and
+              getattr(resp.raw_completion.choices[0], 'finish_reason', None) == 'length'):
+            should_retry = True
+            logger.info("检测到raw_completion中的length截断，需要重试")
+        
+        elif not resp.completion_text or not resp.completion_text.strip():
             # 空回复需要重试
             should_retry = True
             logger.debug("检测到空的LLM响应，需要重试")
@@ -801,7 +871,7 @@ class IntelligentRetry(Star):
             logger.debug(f"LLM响应阶段已清理请求参数: {request_key}")
 
     @filter.on_decorating_result(priority=-100)
-    async def check_and_retry(self, event: AstrMessageEvent):
+    async def check_and_retry(self, event: AstrMessageEvent, *args, **kwargs):
         """检查结果并进行重试（作为LLM响应钩子的备用处理）"""
         # 如果禁用重试则直接返回
         if self.max_attempts <= 0:
