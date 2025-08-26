@@ -9,14 +9,14 @@ import astrbot.api.message_components as Comp
 from astrbot.api import logger, AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
-from astrbot.api.provider import ProviderRequest
+from astrbot.api.provider import ProviderRequest, LLMResponse
 
 
 @register(
     "intelligent_retry",
     "木有知 & 长安某 (优化增强版)",
     "当LLM回复为空或包含特定错误关键词时，自动进行多次重试，使用原始请求参数确保完整重试。新增智能截断检测与并发重试功能，简化架构提升性能",
-    "2.9.4"
+    "2.9.6"
 )
 class IntelligentRetry(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -29,7 +29,7 @@ class IntelligentRetry(Star):
         self._parse_config(config)
         
         logger.info(
-            f"已加载 [IntelligentRetry] 插件 v2.9.1 (优化增强版), "
+            f"已加载 [IntelligentRetry] 插件 v2.9.6 (修复版), "
             f"将在LLM回复无效时自动重试 (最多 {self.max_attempts} 次)，使用原始请求参数确保完整重试。"
             f"截断检测模式: {self.truncation_detection_mode}, 并发重试: {'启用' if self.enable_concurrent_retry else '禁用'}"
         )
@@ -72,11 +72,29 @@ class IntelligentRetry(Star):
             r"|https?://[\\w\.-]+$"
         )
         
-        # 并发重试配置
+        # 并发重试配置 - 遵循官方性能和安全规范
         self.enable_concurrent_retry = bool(config.get('enable_concurrent_retry', False))
-        self.concurrent_retry_threshold = max(1, int(config.get('concurrent_retry_threshold', 1)))
-        self.concurrent_retry_count = max(1, min(5, int(config.get('concurrent_retry_count', 2))))  # 限制1-5个
-        self.concurrent_retry_timeout = max(10, int(config.get('concurrent_retry_timeout', 30)))
+        self.concurrent_retry_threshold = max(0, int(config.get('concurrent_retry_threshold', 1)))
+        
+        # 基础并发数量配置
+        concurrent_count = int(config.get('concurrent_retry_count', 2))
+        self.concurrent_retry_count = max(1, min(concurrent_count, 5))  # 基础并发数1-5范围
+        
+        # 指数增长控制配置
+        self.enable_exponential_growth = bool(config.get('enable_exponential_growth', True))
+        self.max_concurrent_multiplier = max(2, min(int(config.get('max_concurrent_multiplier', 4)), 8))
+        self.absolute_concurrent_limit = max(5, min(int(config.get('absolute_concurrent_limit', 10)), 20))
+        
+        # 超时时间限制，遵循官方资源管理规范
+        timeout = int(config.get('concurrent_retry_timeout', 30))
+        self.concurrent_retry_timeout = max(5, min(timeout, 300))  # 5-300秒范围
+        
+        # 配置验证日志 - 使用官方logger规范
+        if self.enable_concurrent_retry:
+            max_concurrent = min(self.concurrent_retry_count * self.max_concurrent_multiplier, self.absolute_concurrent_limit)
+            logger.info(f"并发重试配置: 阈值={self.concurrent_retry_threshold}(0=立即并发), "
+                       f"基础并发数={self.concurrent_retry_count}, 最大并发={max_concurrent}, "
+                       f"超时={self.concurrent_retry_timeout}s, 指数增长={'启用' if self.enable_exponential_growth else '禁用'}")
     
     def _parse_status_codes(self, codes_str: str) -> set:
         """解析状态码配置字符串"""
@@ -91,8 +109,18 @@ class IntelligentRetry(Star):
         return codes
 
     def _get_request_key(self, event: AstrMessageEvent) -> str:
-        """生成请求的唯一标识符（借鉴v2版本）"""
-        return f"{event.unified_msg_origin}_{id(event)}"
+        """生成稳定的请求唯一标识符，遵循AstrBot事件处理规范"""
+        import hashlib
+        
+        # 使用AstrBot官方推荐的事件属性组合
+        message_id = getattr(event.message_obj, 'message_id', '')
+        timestamp = getattr(event.message_obj, 'timestamp', 0)
+        session_info = event.unified_msg_origin  # 官方推荐的会话标识
+        
+        # 生成稳定的内容hash
+        content_hash = hashlib.md5(f"{event.message_str}{timestamp}".encode()).hexdigest()[:8]
+        
+        return f"{session_info}_{message_id}_{content_hash}"
 
     @filter.on_llm_request()
     async def store_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
@@ -522,25 +550,36 @@ class IntelligentRetry(Star):
         return False
 
     async def _concurrent_retry_sequence(self, event: AstrMessageEvent, request_key: str, remaining_attempts: int) -> bool:
-        """并发重试序列：支持指数增长的并发批次"""
+        """并发重试序列，遵循AstrBot异步处理规范"""
         if remaining_attempts <= 0:
             return False
         
         attempts_used = 0
         batch_number = 1
-        base_concurrent_count = self.concurrent_retry_count
         
         while attempts_used < remaining_attempts:
-            # 计算当前批次的并发数量（指数增长）
-            current_concurrent_count = min(
-                base_concurrent_count * (2 ** (batch_number - 1)),  # 指数增长: 2, 4, 8, 16...
-                remaining_attempts - attempts_used,  # 不超过剩余次数
-                max(1, remaining_attempts // 2)  # 避免过度并发，最多使用剩余次数的一半
-            )
+            # 计算指数增长的并发数，但有合理上限控制
+            if self.enable_exponential_growth:
+                base_count = self.concurrent_retry_count
+                exponential_count = base_count * (2 ** (batch_number - 1))  # 2, 4, 8, 16...
+                
+                current_concurrent_count = min(
+                    exponential_count,  # 指数增长的并发数
+                    remaining_attempts - attempts_used,  # 不超过剩余次数
+                    self.concurrent_retry_count * self.max_concurrent_multiplier,  # 上限：基础并发数的倍数
+                    self.absolute_concurrent_limit  # 绝对上限
+                )
+                growth_info = f"(指数增长: {base_count}×{2**(batch_number-1)}={exponential_count}, 实际={current_concurrent_count})"
+            else:
+                current_concurrent_count = min(
+                    self.concurrent_retry_count,  # 固定并发数量
+                    remaining_attempts - attempts_used  # 不超过剩余次数
+                )
+                growth_info = "(固定并发)"
             
-            logger.info(f"启动第 {batch_number} 批次并发重试，同时发起 {current_concurrent_count} 个请求...")
+            logger.info(f"启动第 {batch_number} 批次并发重试，并发数: {current_concurrent_count} {growth_info}")
             
-            # 执行单次并发批次
+            # 执行并发批次 - 遵循官方异步规范
             batch_success = await self._single_concurrent_batch(event, request_key, current_concurrent_count)
             if batch_success:
                 return True
@@ -549,7 +588,11 @@ class IntelligentRetry(Star):
             attempts_used += current_concurrent_count
             batch_number += 1
             
-            logger.debug(f"第 {batch_number - 1} 批次并发重试失败，已使用 {attempts_used}/{remaining_attempts} 次")
+            logger.debug(f"第 {batch_number - 1} 批次失败，已用 {attempts_used}/{remaining_attempts} 次重试")
+            
+            # 批次间延迟 - 遵循官方性能规范，避免过于频繁请求
+            if attempts_used < remaining_attempts:
+                await asyncio.sleep(1)
         
         logger.warning(f"所有 {batch_number - 1} 个并发批次均失败")
         return False
@@ -654,50 +697,120 @@ class IntelligentRetry(Star):
                     except asyncio.CancelledError:
                         pass
             
-            # 检查最终结果
+            # 检查最终结果 - 遵循官方结果处理规范
             if first_valid_result:
+                # 使用官方推荐的结果设置方法
                 event.set_result(event.plain_result(first_valid_result))
-                logger.info(f"并发批次成功，已取消剩余 {len(remaining_tasks)} 个任务")
+                
+                # 清理剩余任务 - 遵循官方资源管理规范
+                cancelled_count = len([t for t in remaining_tasks if not t.done()])
+                if cancelled_count > 0:
+                    logger.debug(f"并发重试成功，已取消 {cancelled_count} 个剩余任务")
+                else:
+                    logger.info("并发重试成功完成")
+                
                 return True
             else:
-                logger.debug(f"当前并发批次失败，所有 {concurrent_count} 个任务均未成功")
+                logger.debug(f"并发批次未获得有效结果，{concurrent_count} 个任务均失败")
                 return False
                 
         except Exception as e:
-            logger.error(f"并发批次执行过程中发生异常: {e}")
-            # 清理所有任务
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-                    try:
-                        await task
-                    except asyncio.CancelledError:
-                        pass
+            logger.error(f"并发批次执行异常: {e}")
+            # 确保异常情况下的资源清理
+            await self._cleanup_concurrent_tasks(tasks)
             
-            # 即使发生异常，也检查是否已有结果
+            # 检查是否有结果可用
             if first_valid_result:
                 event.set_result(event.plain_result(first_valid_result))
                 logger.info("异常期间获得有效结果，仍然返回成功")
                 return True
-            
+                
             return False
 
     def _handle_retry_failure(self, event: AstrMessageEvent) -> None:
-        """处理重试失败的情况（拆分后的失败处理逻辑）"""
+        """处理重试失败的情况，遵循AstrBot事件处理规范"""
         logger.error(f"所有 {self.max_attempts} 次重试均失败")
         
         # 发送兜底回复
         if self.fallback_reply and self.fallback_reply.strip():
             event.set_result(event.plain_result(self.fallback_reply.strip()))
+            logger.info("已发送兜底回复消息")
         else:
             event.clear_result()
             event.stop_event()
+            logger.debug("未配置兜底回复，事件已终止")
 
-    @filter.on_decorating_result(priority=-1)
-    async def check_and_retry(self, event: AstrMessageEvent):
-        """检查结果并进行重试（重构后的主入口方法）"""
+    @filter.on_llm_response(priority=10)
+    async def retry_on_llm_response(self, event: AstrMessageEvent, resp: LLMResponse):
+        """在LLM响应阶段进行重试检测和处理"""
         # 如果禁用重试则直接返回
         if self.max_attempts <= 0:
+            return
+            
+        # 检查是否有存储的请求参数
+        request_key = self._get_request_key(event)
+        if request_key not in self.pending_requests:
+            return
+            
+        # 使用现有的响应失败检测逻辑
+        # 这里我们需要将LLMResponse转换为类似result的格式来复用现有逻辑
+        should_retry = False
+        
+        if not resp.completion_text or not resp.completion_text.strip():
+            # 空回复需要重试
+            should_retry = True
+            logger.debug("检测到空的LLM响应，需要重试")
+        else:
+            # 如果有文本内容，创建一个临时result对象来检测
+            from astrbot.api.event import MessageEventResult
+            temp_result = MessageEventResult()
+            temp_result.chain = [Comp.Plain(text=resp.completion_text)]
+            
+            # 使用现有的检测逻辑
+            should_retry = self._should_retry_response(temp_result)
+            
+        if not should_retry:
+            return
+            
+        logger.info("在LLM响应阶段检测到需要重试的情况")
+        
+        # 执行重试序列
+        retry_success = await self._execute_retry_sequence(event, request_key)
+        
+        if retry_success:
+            # 重试成功，更新LLM响应
+            result = event.get_result()
+            if result and result.chain:
+                # 更新completion_text
+                text_parts = [comp.text for comp in result.chain if isinstance(comp, Comp.Plain) and hasattr(comp, 'text')]
+                if text_parts:
+                    resp.completion_text = ''.join(text_parts)
+                    logger.info("LLM响应已通过重试更新")
+        else:
+            # 重试失败，发送兜底回复
+            if self.fallback_reply and self.fallback_reply.strip():
+                resp.completion_text = self.fallback_reply.strip()
+                logger.info("重试失败，使用兜底回复")
+            else:
+                # 如果没有兜底回复，保持原样但记录日志
+                logger.warning("重试失败且未配置兜底回复")
+                
+        # 清理存储的请求参数
+        if request_key in self.pending_requests:
+            del self.pending_requests[request_key]
+            logger.debug(f"LLM响应阶段已清理请求参数: {request_key}")
+
+    @filter.on_decorating_result(priority=-100)
+    async def check_and_retry(self, event: AstrMessageEvent):
+        """检查结果并进行重试（作为LLM响应钩子的备用处理）"""
+        # 如果禁用重试则直接返回
+        if self.max_attempts <= 0:
+            return
+
+        # 检查是否还有存储的请求参数
+        request_key = self._get_request_key(event)
+        if request_key not in self.pending_requests:
+            # 已经被LLM响应钩子处理过，直接返回
             return
 
         # 检查原始LLM响应，如果是工具调用则不干预
@@ -706,23 +819,29 @@ class IntelligentRetry(Star):
             finish_reason = getattr(llm_response.choices[0], 'finish_reason', None)
             if finish_reason == 'tool_calls':
                 logger.debug("检测到正常的工具调用，不进行干预")
+                # 清理请求参数
+                if request_key in self.pending_requests:
+                    del self.pending_requests[request_key]
                 return
 
         result = event.get_result()
         
         # 检查是否需要重试
         if not self._should_retry_response(result):
+            # 清理请求参数
+            if request_key in self.pending_requests:
+                del self.pending_requests[request_key]
             return
         
         # 只有在用户发送了文本内容时才进行重试
         if not event.message_str or not event.message_str.strip():
             logger.debug("用户消息为空，跳过重试")
+            # 清理请求参数
+            if request_key in self.pending_requests:
+                del self.pending_requests[request_key]
             return
 
-        logger.info("检测到需要重试的情况，开始重试流程")
-        
-        # 获取存储的请求参数
-        request_key = self._get_request_key(event)
+        logger.info("在结果装饰阶段检测到需要重试的情况（备用处理）")
         
         # 执行重试序列
         retry_success = await self._execute_retry_sequence(event, request_key)
@@ -734,10 +853,34 @@ class IntelligentRetry(Star):
         # 清理存储的请求参数
         if request_key in self.pending_requests:
             del self.pending_requests[request_key]
+            logger.debug(f"结果装饰阶段已清理请求参数: {request_key}")
+
+    async def _cleanup_concurrent_tasks(self, tasks):
+        """安全清理并发任务，遵循AstrBot资源管理规范"""
+        if not tasks:
+            return
+            
+        cleanup_count = 0
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+                cleanup_count += 1
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    # 官方推荐：正常的取消操作，不记录为错误
+                    pass
+                except Exception as e:
+                    # 使用官方logger记录清理异常
+                    logger.debug(f"清理并发任务时出现异常: {e}")
+        
+        if cleanup_count > 0:
+            logger.debug(f"已清理 {cleanup_count} 个未完成的并发任务")
 
     async def terminate(self):
-        """插件卸载时清理资源"""
+        """插件卸载时清理资源，遵循官方生命周期规范"""
+        # 清理存储的请求参数
         self.pending_requests.clear()
-        logger.info("已卸载 [IntelligentRetry] 插件 (优化版)。")
+        logger.info("已卸载 [IntelligentRetry] 插件并清理所有资源")
 
 # --- END OF FILE main.py ---
