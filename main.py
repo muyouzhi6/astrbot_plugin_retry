@@ -3,7 +3,6 @@
 import asyncio
 import json
 import re
-import time
 from typing import Dict, Any, Optional
 
 import astrbot.api.message_components as Comp
@@ -16,7 +15,7 @@ from astrbot.api.provider import ProviderRequest
 @register(
     "intelligent_retry",
     "木有知 & 长安某 (优化增强版)",
-    "当LLM回复为空或包含特定错误关键词时，自动进行多次重试，使用原始请求参数确保完整重试。新增智能截断检测与并发重试功能，简化架构提升性能，修复截断检测准确性",
+    "当LLM回复为空或包含特定错误关键词时，自动进行多次重试，使用原始请求参数确保完整重试。新增智能截断检测与并发重试功能，简化架构提升性能",
     "2.9.3"
 )
 class IntelligentRetry(Star):
@@ -30,9 +29,9 @@ class IntelligentRetry(Star):
         self._parse_config(config)
         
         logger.info(
-            f"已加载 [IntelligentRetry] 插件 v2.9.3, "
-            f"最大重试次数: {self.max_attempts}, 截断检测: {'启用' if self.enable_truncation_retry else '禁用'}, "
-            f"并发重试: {'启用' if self.enable_concurrent_retry else '禁用'}"
+            f"已加载 [IntelligentRetry] 插件 v2.9.1 (优化增强版), "
+            f"将在LLM回复无效时自动重试 (最多 {self.max_attempts} 次)，使用原始请求参数确保完整重试。"
+            f"截断检测模式: {self.truncation_detection_mode}, 并发重试: {'启用' if self.enable_concurrent_retry else '禁用'}"
         )
     
     def _parse_config(self, config: AstrBotConfig) -> None:
@@ -92,22 +91,12 @@ class IntelligentRetry(Star):
         return codes
 
     def _get_request_key(self, event: AstrMessageEvent) -> str:
-        """生成稳定的请求标识符（基于事件属性，非时间）"""
-        platform = getattr(event.unified_msg_origin, 'platform', 'unknown')
-        sender_id = str(getattr(event.unified_msg_origin, 'sender_id', 'unknown'))
-        msg_type = getattr(event.unified_msg_origin, 'msg_type', 'unknown')
-        
-        # 使用事件固有属性，确保两个钩子使用相同的键
-        key = f"{platform}:{msg_type}:{sender_id}:{hash(event.message_str)}"
-        return key
+        """生成请求的唯一标识符（借鉴v2版本）"""
+        return f"{event.unified_msg_origin}_{id(event)}"
 
     @filter.on_llm_request()
-    async def store_llm_request(self, event: AstrMessageEvent, req: ProviderRequest, *args):
+    async def store_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
         """存储LLM请求参数（借鉴v2版本的双钩子机制）"""
-        # 钩子执行追踪
-        logger.debug(f"[HOOK] on_llm_request 触发 - 消息: '{event.message_str[:50]}...'")
-        logger.debug(f"[HOOK] Event ID: {id(event)}, 类型: {type(event)}")
-        
         request_key = self._get_request_key(event)
         
         # 获取图片URL
@@ -123,168 +112,61 @@ class IntelligentRetry(Star):
             'image_urls': image_urls,
             'system_prompt': getattr(req, 'system_prompt', ''),
             'func_tool': getattr(req, 'func_tool', None),
-            'unified_msg_origin': event.unified_msg_origin
+            'unified_msg_origin': event.unified_msg_origin,
         }
+        
+        logger.debug(f"已存储LLM请求参数: {request_key}")
 
     def _is_truncated(self, text: str) -> bool:
         """主入口方法：多层截断检测"""
         if not text or not text.strip():
-            logger.debug("截断检测: 文本为空，不是截断")
             return False
         
         # 如果内容太短，一般不认为是截断（除非明显不完整）
         if len(text.strip()) < self.min_reasonable_length:
-            logger.debug(f"截断检测: 文本长度 {len(text.strip())} < {self.min_reasonable_length}，可能太短")
             return False
         
         try:
-            logger.debug(f"🔍 开始截断检测 - 模式: {self.truncation_detection_mode}, 文本长度: {len(text)}")
-            logger.debug(f"文本结尾50字符: '{text[-50:]}'")
-            
             # 根据检测模式选择策略
             if self.truncation_detection_mode == 'basic':
-                result = self._detect_character_level_truncation(text)
-                logger.debug(f"基础模式检测结果: {result}")
-                return result
+                return self._detect_character_level_truncation(text)
             elif self.truncation_detection_mode == 'enhanced':
                 # 多层检测：字符级 + 结构级 + 内容类型
-                char_result = self._detect_character_level_truncation(text)
-                struct_result = self._detect_structural_truncation(text)
-                content_result = self._detect_content_type_truncation(text)
-                
-                final_result = char_result or struct_result or content_result
-                logger.debug(f"增强模式检测结果: 字符级={char_result}, 结构级={struct_result}, 内容类型={content_result}, 最终={final_result}")
-                return final_result
+                return (self._detect_character_level_truncation(text) or 
+                       self._detect_structural_truncation(text) or 
+                       self._detect_content_type_truncation(text))
             elif self.truncation_detection_mode == 'strict':
                 # 严格模式：所有检测都要通过
-                char_result = self._detect_character_level_truncation(text)
-                struct_result = self._detect_structural_truncation(text)
-                final_result = char_result and struct_result
-                logger.debug(f"严格模式检测结果: 字符级={char_result}, 结构级={struct_result}, 最终={final_result}")
-                return final_result
+                return (self._detect_character_level_truncation(text) and 
+                       self._detect_structural_truncation(text))
             else:
                 # 默认使用基础模式
-                result = self._detect_character_level_truncation(text)
-                logger.debug(f"默认模式检测结果: {result}")
-                return result
+                return self._detect_character_level_truncation(text)
         except Exception as e:
             logger.warning(f"截断检测发生错误，回退到基础模式: {e}")
             return self._detect_character_level_truncation(text)
     
     def _detect_character_level_truncation(self, text: str) -> bool:
-        """第一层：改进的字符级截断检测"""
+        """第一层：增强的字符级截断检测"""
         if not text or not text.strip():
             return False
         
-        # 获取最后一行，去除首尾空白
-        last_line = text.strip().splitlines()[-1].strip()
-        logger.debug(f"📝 字符级检测 - 最后一行: '{last_line}'")
+        # 只检测最后一行（防止多段回复）
+        last_line = text.strip().splitlines()[-1]
         
-        # 1. 检查是否以句子结束标点符号结尾（中英文）
-        sentence_endings = r"[。！？!?\.;。？！]$"
-        if re.search(sentence_endings, last_line):
-            logger.debug("✅ 字符级检测: 以句子结束标点结尾，不是截断")
-            return False  # 以句子结束标点结尾，不是截断
+        # 使用增强的正则表达式
+        enhanced_pattern = (
+            # 原有的模式
+            self.truncation_valid_tail_pattern +
+            # 新增的技术符号
+            r"|[->=:]+$|[}\])]$|[0-9]+[%°]?$" +
+            # 新增的代码文件后缀
+            r"|\.(py|js|ts|java|cpp|c|h|css|html|json|xml|yaml|yml|md|rst)$"
+        )
         
-        # 2. 检查是否以明确的完整结构结尾
-        complete_endings = [
-            r"[)]$",  # 右括号
-            r"[}]$",  # 右大括号
-            r"[]]$",  # 右方括号
-            r"[>]$",  # 右尖括号
-            r'["\']$',  # 引号结尾
-            r"\d+[%°]?$",  # 数字加可选的百分号或度数符号
-            r"\.(com|cn|org|net|io|ai|pdf|jpg|png|jpeg|gif|mp3|mp4|txt|zip|tar|gz|html|htm)$",  # 文件扩展名
-            r"https?://[\w\.-]+/?$",  # URL
-        ]
-        
-        for i, pattern in enumerate(complete_endings):
-            if re.search(pattern, last_line, re.IGNORECASE):
-                logger.debug(f"✅ 字符级检测: 匹配完整结构模式 #{i+1}，不是截断")
-                return False  # 以完整结构结尾，不是截断
-        
-        # 3. 检查是否以明显的截断标志结尾
-        truncation_indicators = [
-            r"[，,、；;:]$",  # 逗号、顿号、分号、冒号（通常表示还有后续内容）
-            r"(而且|但是|然而|因此|所以|不过|另外|此外|同时|另一方面|另一种|还有)$",  # 中文连接词
-            r"(and|or|but|however|therefore|moreover|furthermore|additionally|also|as well as)$",  # 英文连接词
-            r"(的|了|在|对|为|与|及|以|从|由|向|到|于|等|或|和)$",  # 中文介词、连词
-            r"(is|are|was|were|will|would|should|could|has|have|had)$",  # 英文助动词
-            r"(a|an|the|this|that|these|those|my|your|his|her|its|our|their)$",  # 英文限定词
-            r"\w+ing$",  # 英文现在分词
-        ]
-        
-        for i, pattern in enumerate(truncation_indicators):
-            if re.search(pattern, last_line, re.IGNORECASE):
-                logger.debug(f"⚠️ 字符级检测: 匹配截断指示模式 #{i+1}，判定为截断")
-                return True  # 以截断指示词结尾，可能被截断
-        
-        # 4. 检查文本长度和内容复杂度
-        # 如果是很短的文本且没有明确的结束标志，可能是截断
-        if len(last_line) < 5:
-            logger.debug(f"⚠️ 字符级检测: 最后一行太短 ({len(last_line)} < 5)，判定为截断")
-            return True
-        
-        # 5. 检查是否以普通字符结尾但没有上下文完整性
-        # 如果最后的字符是字母或中文字符，但不是明确的结束
-        if re.search(r"[\w\u4e00-\u9fa5]$", last_line):
-            logger.debug("🤔 字符级检测: 以普通字符结尾，进行语义完整性检查...")
-            # 进一步检查：如果整个句子看起来不完整，则认为是截断
-            # 检查是否包含动词但没有宾语，或其他语法不完整的模式
-            semantic_result = self._check_semantic_completeness(last_line)
-            logger.debug(f"🤔 语义完整性检查结果: {semantic_result}")
-            return semantic_result
-        
-        # 默认：如果无法确定，保守起见不认为是截断
-        logger.debug("✅ 字符级检测: 无法确定，保守判定为不截断")
-        return False
-    
-    def _check_semantic_completeness(self, text: str) -> bool:
-        """检查语义完整性，判断句子是否完整"""
-        logger.debug(f"🧠 语义检测 - 分析文本: '{text}'")
-        
-        # 检查是否以动词结尾但没有合适的补语
-        chinese_verbs_needing_object = ['正在', '开始', '完成', '进行', '处理', '分析', '考虑', '思考', '学习', '研究', '制作', '创建', '设计', '编写', '开发']
-        for verb in chinese_verbs_needing_object:
-            if text.endswith(verb):
-                logger.debug(f"🧠 语义检测: 以需要宾语的动词 '{verb}' 结尾，判定为截断")
-                return True  # 这些动词后面通常需要宾语
-        
-        # 检查是否以介词结尾（通常需要宾语）
-        prep_pattern = r'(对于|关于|通过|使用|基于|根据|按照|依据|针对|面对|围绕|涉及)$'
-        if re.search(prep_pattern, text):
-            logger.debug("🧠 语义检测: 以介词结尾，通常需要宾语，判定为截断")
-            return True
-        
-        # 检查英文的不完整模式
-        english_incomplete_pattern = r'(to|for|with|by|in|on|at|from|about|into|onto|upon|during|before|after)$'
-        if re.search(english_incomplete_pattern, text, re.IGNORECASE):
-            logger.debug("🧠 语义检测: 以英文介词结尾，判定为截断")
-            return True
-        
-        # 新增：检查疑问词开头但没有问号结尾的情况
-        question_starters = ['什么', '为什么', '怎么', '如何', '哪个', '哪些', '谁', '何时', '在哪', 'what', 'why', 'how', 'which', 'who', 'when', 'where']
-        for starter in question_starters:
-            if text.lower().startswith(starter.lower()) and not text.endswith('?') and not text.endswith('？'):
-                logger.debug(f"🧠 语义检测: 以疑问词 '{starter}' 开头但没有问号结尾，可能是截断的问题")
-                return True
-        
-        # 新增：检查列举但没有结束的情况
-        list_indicators = ['包括', '有', '分别是', '例如', '比如', 'such as', 'including', 'like']
-        for indicator in list_indicators:
-            if indicator in text and text.endswith(indicator):
-                logger.debug(f"🧠 语义检测: 以列举词 '{indicator}' 结尾，可能后续有内容")
-                return True
-        
-        # 新增：检查定语从句但没有完整的情况
-        relative_markers = ['其中', '其', '这个', '这些', '那个', '那些', 'which', 'that', 'who', 'whose', 'where']
-        for marker in relative_markers:
-            if text.endswith(marker):
-                logger.debug(f"🧠 语义检测: 以关系词 '{marker}' 结尾，可能是不完整的定语从句")
-                return True
-        
-        logger.debug("🧠 语义检测: 未发现明显的不完整标志")
-        return False
+        if re.search(enhanced_pattern, last_line, re.IGNORECASE):
+            return False
+        return True
     
     def _detect_structural_truncation(self, text: str) -> bool:
         """第二层：结构完整性检测"""
@@ -524,21 +406,18 @@ class IntelligentRetry(Star):
             
             # 截断检测
             if self.enable_truncation_retry and self._is_truncated(message_str):
-                logger.info(f"💥 检测到回复疑似被截断，触发截断重试")
-                logger.debug(f"截断内容分析 - 全文长度: {len(message_str)}, 结尾内容: '{message_str[-50:]}'")
+                logger.info(f"检测到回复疑似被截断，触发截断重试。内容结尾: {message_str[-20:]}")
                 return True
         
         return False
 
     async def _perform_retry_with_stored_params(self, request_key: str) -> Optional[Any]:
-        """使用存储的参数执行重试（带备份恢复机制）"""
-        # 获取存储的参数
+        """使用存储的参数执行重试（借鉴v2版本的高效设计）"""
         if request_key not in self.pending_requests:
-            logger.error(f"未找到存储的请求参数: {request_key}")
+            logger.warning(f"未找到存储的请求参数: {request_key}")
             return None
-            
-        stored_params = self.pending_requests[request_key]
         
+        stored_params = self.pending_requests[request_key]
         provider = self.context.get_using_provider()
         
         if not provider:
@@ -576,11 +455,9 @@ class IntelligentRetry(Star):
             return await self._sequential_retry_sequence(event, request_key, self.max_attempts, delay)
         
         # 并发重试模式：根据阈值决定是否跳过顺序重试
-        logger.debug(f"[DEBUG] 并发重试检查: enable={self.enable_concurrent_retry}, threshold={self.concurrent_retry_threshold}")
-        
         if self.concurrent_retry_threshold == 0:
             # 阈值为0：直接启用并发重试，使用全部重试次数
-            logger.info("阈值=0，强制启动直接并发重试模式，跳过顺序重试阶段")
+            logger.info("配置为直接并发重试模式，跳过顺序重试阶段")
             return await self._concurrent_retry_sequence(event, request_key, self.max_attempts)
         
         # 混合重试模式：先顺序重试到阈值，然后并发重试
@@ -819,50 +696,13 @@ class IntelligentRetry(Star):
     @filter.on_decorating_result(priority=-1)
     async def check_and_retry(self, event: AstrMessageEvent):
         """检查结果并进行重试（重构后的主入口方法）"""
-        # 钩子执行追踪
-        logger.debug(f"[HOOK] on_decorating_result 触发 - 消息: '{event.message_str[:50]}...'")
-        logger.debug(f"[HOOK] Event ID: {id(event)}, 类型: {type(event)}")
-        
         # 如果禁用重试则直接返回
         if self.max_attempts <= 0:
-            logger.debug("[SKIP] 重试功能已禁用")
             return
 
-        # 首先检查是否是内置指令（直接跳过，避免键冲突导致的误判）
-        message_text = event.message_str.strip() if event.message_str else ""
-        if message_text.startswith('/') and not message_text.startswith('//'):
-            # 常见内置指令列表
-            builtin_commands = [
-                '/help', '/plugin', '/t2i', '/tts', '/sid', '/op', '/deop', '/wl', '/dwl',
-                '/provider', '/model', '/ls', '/new', '/groupnew', '/switch', '/rename',
-                '/del', '/reset', '/history', '/key', '/persona', '/dashboard_update',
-                '/set', '/unset', '/llm', '/alter_cmd', '/tool', '/websearch'
-            ]
-            
-            command = message_text.split()[0].lower()
-            if command in builtin_commands:
-                logger.debug(f"[SKIP] 检测到内置指令 {command}，跳过重试检查")
-                return
-        
-        # 检查这个消息是否实际经过了LLM处理
-        request_key = self._get_request_key(event)
-        
-        # 检查是否有存储的参数（表明经过了LLM处理）
-        has_llm_processing = request_key in self.pending_requests
-        
-        if not has_llm_processing:
-            logger.debug(f"[SKIP] 消息未经LLM处理，跳过重试检查: '{event.message_str}'")
-            logger.debug(f"[SKIP] 查找key: {request_key}")
-            return
-
-        # 检查是否是LLM实际产生的回复
+        # 检查原始LLM响应，如果是工具调用则不干预
         llm_response = getattr(event, 'llm_response', None)
-        if not llm_response:
-            logger.debug(f"[SKIP] 无LLM响应对象，可能是其他插件处理的消息")
-            return
-
-        # 检查工具调用
-        if hasattr(llm_response, 'choices') and llm_response.choices:
+        if llm_response and hasattr(llm_response, 'choices') and llm_response.choices:
             finish_reason = getattr(llm_response.choices[0], 'finish_reason', None)
             if finish_reason == 'tool_calls':
                 logger.debug("检测到正常的工具调用，不进行干预")
@@ -891,21 +731,13 @@ class IntelligentRetry(Star):
         if not retry_success:
             self._handle_retry_failure(event)
         
-        # 清理存储的请求参数（延迟清理）
-        self._schedule_cleanup(request_key, delay=60)
-
-    def _schedule_cleanup(self, request_key: str, delay: int = 120):
-        """延迟清理参数，给重试流程足够时间"""
-        async def delayed_cleanup():
-            await asyncio.sleep(delay)
-            if request_key in self.pending_requests:
-                del self.pending_requests[request_key]
-            
-        asyncio.create_task(delayed_cleanup())
+        # 清理存储的请求参数
+        if request_key in self.pending_requests:
+            del self.pending_requests[request_key]
 
     async def terminate(self):
         """插件卸载时清理资源"""
         self.pending_requests.clear()
-        logger.info("已卸载 [IntelligentRetry] 插件 v2.9.3。")
+        logger.info("已卸载 [IntelligentRetry] 插件 (优化版)。")
 
 # --- END OF FILE main.py ---
