@@ -14,8 +14,8 @@ from astrbot.api.event import AstrMessageEvent, filter
 @register(
     "intelligent_retry",
     "木有知 & 长安某 (优化增强版)",
-    "当LLM回复为空或包含特定错误关键词时，自动进行多次重试，使用原始请求参数确保完整重试。新增智能截断检测与并发重试功能，简化架构提升性能",
-    "2.9.6",
+    "当LLM回复为空或包含特定错误关键词时，自动进行多次重试，使用原始请求参数确保完整重试。新增智能截断检测与并发重试功能，简化架构提升性能。v2.9.7: 修复人格丢失和TTS插件兼容性问题",
+    "2.9.7",
 )
 class IntelligentRetry(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -28,7 +28,7 @@ class IntelligentRetry(Star):
         self._parse_config(config)
 
         logger.info(
-            f"已加载 [IntelligentRetry] 插件 v2.9.6 (修复版), "
+            f"已加载 [IntelligentRetry] 插件 v2.9.7 (修复版), "
             f"将在LLM回复无效时自动重试 (最多 {self.max_attempts} 次)，使用原始请求参数确保完整重试。"
             f"截断检测模式: {self.truncation_detection_mode}, 并发重试: {'启用' if self.enable_concurrent_retry else '禁用'}"
         )

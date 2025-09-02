@@ -1,11 +1,11 @@
 # AstrBot 智能重试插件 (Intelligent Retry)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/Version-2.9.1-blue)](https://github.com/muyouzhi6/astrbot_plugin_retry)
+[![Version](https://img.shields.io/badge/Version-2.9.7-blue)](https://github.com/muyouzhi6/astrbot_plugin_retry)
 
 一个为 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 设计的高性能智能重试插件，专门解决大语言模型（LLM）交互中的不稳定问题。通过三层智能检测系统和并发重试机制，显著提升对话体验和响应速度。
 
-**当前版本：v2.9.6** - 新增智能截断检测与并发重试优化，简化架构移除冗余功能
+**当前版本：v2.9.7** - 🔥 **重要修复**：人格丢失和TTS插件兼容性问题
 
 ## ✨ 核心特性
 
@@ -201,7 +201,20 @@ A: 可以，通过配置不同的检测选项实现精确控制。
 - 🚀 **功能建议**：欢迎提交Pull Request
 - ⭐ **支持项目**：给个Star是最大的鼓励！
 
-## 📄 许可证
+## � 更新日志
+
+### v2.9.7 (2025-09-02) 🔥 重要修复
+- ✅ **修复人格丢失问题**：重试时现在使用完整的人格信息，确保角色设定在重试过程中不会丢失
+- ✅ **修复TTS插件兼容性**：重试结果现在正确标记为`LLM_RESULT`类型，TTS插件能正常识别并生成语音
+- ✅ **优化上下文保持**：完整保存`conversation`、`system_prompt`等关键参数
+- ✅ **代码风格规范**：通过ruff格式化，符合AstrBot项目规范
+- 🔧 **内部优化**：统一导入路径，提升插件生态兼容性
+
+### v2.9.6 (2024-12-XX)
+- 新增智能截断检测与并发重试功能
+- 简化架构移除冗余功能，提升性能
+
+## �📄 许可证
 
 本项目基于 [MIT License](LICENSE) 开源。
 

@@ -1,6 +1,6 @@
 name: intelligent_retry
-desc: 当LLM回复为空、对话截断或包含特定错误关键词/可配置状态码时，自动重试并保持原有上下文与人设；支持指数退避、状态码白/黑名单与失败兜底。新增智能截断检测系统与并发重试功能，显著减少响应延迟。简化架构，移除冗余功能，修复上下文丢失bug。(优化增强版)
-version: 2.9.6
+desc: 智能LLM重试插件，支持截断检测、并发重试、人格保持。v2.9.7修复人格丢失和TTS兼容性问题 (优化增强版)
+version: 2.9.7
 author: 木有知 & 长安某 (优化增强版)
 repo: https://github.com/muyouzhi6/astrbot_plugin_retry
 config:
