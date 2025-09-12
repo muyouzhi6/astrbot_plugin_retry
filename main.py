@@ -554,12 +554,8 @@ class IntelligentRetry(Star):
                     logger.debug(f"检测到错误关键词 '{keyword}'，需要重试")
                     return True
 
-            # 截断检测
-            if self.enable_truncation_retry and self._is_truncated(message_str):
-                logger.info(
-                    f"检测到回复疑似被截断，触发截断重试。内容结尾: {message_str[-20:]}"
-                )
-                return True
+            # 截断检测 - 已移至 retry_on_llm_response 中使用更精确的 finish_reason 判断
+            # 这里不再进行基于文本的截断检测，避免误报
 
         return False
 
@@ -583,12 +579,14 @@ class IntelligentRetry(Star):
             # conversation对象已包含完整的会话上下文和人格信息
             kwargs = {}
             
+            # 必须传递prompt参数
+            kwargs["prompt"] = stored_params["prompt"]
+            
             # conversation是状态的唯一真实来源
             if "conversation" in stored_params and stored_params["conversation"]:
                 kwargs["conversation"] = stored_params["conversation"]
             else:
-                # 如果没有conversation，构建基础参数
-                kwargs["prompt"] = stored_params["prompt"]
+                # 如果没有conversation，添加contexts参数
                 kwargs["contexts"] = stored_params["contexts"]
                 
             # 添加其他必要参数
@@ -970,30 +968,68 @@ class IntelligentRetry(Star):
                 "[TRUNCATED_BY_LENGTH]", ""
             ).strip()
 
-        # 检查raw_completion的finish_reason
+        # 核心修改：更智能的截断检测 - 必须同时满足 finish_reason 和文本特征
         elif (
-            hasattr(resp, "raw_completion")
+            self.enable_truncation_retry
+            and resp  # 确保 resp 对象存在
+            and hasattr(resp, "finish_reason")  # 首先检查是否有 finish_reason 属性
+            and resp.finish_reason == "length"  # 核心条件：finish_reason 必须是 'length'
+        ):
+            # finish_reason 是 'length'，现在检查文本特征作为辅助判断
+            if resp.completion_text and resp.completion_text.strip():
+                # 使用现有的文本截断检测作为辅助判断
+                if self._is_truncated(resp.completion_text):
+                    should_retry = True
+                    logger.info(
+                        f"检测到LLM响应被截断（finish_reason='length' 且文本特征符合）。"
+                        f"内容结尾: {resp.completion_text[-20:]}"
+                    )
+                else:
+                    logger.debug(
+                        "虽然 finish_reason='length'，但文本看起来是完整的，不触发重试"
+                    )
+            else:
+                # finish_reason 是 'length' 但没有文本内容，这种情况应该重试
+                should_retry = True
+                logger.info("检测到 finish_reason='length' 且响应为空，需要重试")
+        
+        # 检查 raw_completion 中的 finish_reason（兼容不同的响应结构）
+        elif (
+            self.enable_truncation_retry
+            and hasattr(resp, "raw_completion")
             and resp.raw_completion
             and hasattr(resp.raw_completion, "choices")
             and resp.raw_completion.choices
-            and getattr(resp.raw_completion.choices[0], "finish_reason", None)
-            == "length"
+            and getattr(resp.raw_completion.choices[0], "finish_reason", None) == "length"
         ):
-            should_retry = True
-            logger.info("检测到raw_completion中的length截断，需要重试")
+            # 同样需要检查文本特征
+            if resp.completion_text and resp.completion_text.strip():
+                if self._is_truncated(resp.completion_text):
+                    should_retry = True
+                    logger.info(
+                        f"检测到raw_completion中的length截断且文本特征符合。"
+                        f"内容结尾: {resp.completion_text[-20:]}"
+                    )
+                else:
+                    logger.debug(
+                        "虽然 raw_completion.finish_reason='length'，但文本看起来是完整的，不触发重试"
+                    )
+            else:
+                should_retry = True
+                logger.info("检测到 raw_completion.finish_reason='length' 且响应为空，需要重试")
 
         elif not resp.completion_text or not resp.completion_text.strip():
             # 空回复需要重试
             should_retry = True
             logger.debug("检测到空的LLM响应，需要重试")
         else:
-            # 如果有文本内容，创建一个临时result对象来检测
+            # 如果有文本内容，创建一个临时result对象来检测其他错误情况（不包括截断）
             from astrbot.api.event import MessageEventResult
 
             temp_result = MessageEventResult()
             temp_result.chain = [Comp.Plain(text=resp.completion_text)]
 
-            # 使用现有的检测逻辑
+            # 使用现有的检测逻辑（但排除截断检测，因为已经在上面处理了）
             should_retry = self._should_retry_response(temp_result)
 
         if not should_retry:
