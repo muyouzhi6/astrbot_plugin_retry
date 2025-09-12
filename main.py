@@ -189,7 +189,7 @@ class IntelligentRetry(Star):
         ]
 
         # 存储请求参数 - 注意：此时system_prompt已包含完整的人格信息
-        self.pending_requests[request_key] = {
+        stored_params = {
             "prompt": req.prompt,
             "contexts": getattr(req, "contexts", []),
             "image_urls": image_urls,
@@ -198,8 +198,19 @@ class IntelligentRetry(Star):
             "unified_msg_origin": event.unified_msg_origin,
             "conversation": getattr(req, "conversation", None),
         }
+        
+        # 显式存储sender信息（第一处修改：存储阶段）
+        stored_params["sender"] = {
+            "user_id": getattr(event.message_obj, "user_id", None),
+            "nickname": getattr(event.message_obj, "nickname", None),
+            "group_id": getattr(event.message_obj, "group_id", None),
+            "platform": getattr(event.message_obj, "platform", None),
+            # 如果有其他sender相关字段也可以在这里添加
+        }
+        
+        self.pending_requests[request_key] = stored_params
 
-        logger.debug(f"已存储LLM请求参数（含完整人格信息）: {request_key}")
+        logger.debug(f"已存储LLM请求参数（含完整人格信息和sender信息）: {request_key}")
 
     def _is_truncated(self, text_or_response) -> bool:
         """主入口方法：多层截断检测，支持文本和LLMResponse对象"""
@@ -575,26 +586,59 @@ class IntelligentRetry(Star):
             return None
 
         try:
-            # 主要依赖conversation对象来传递会话状态
-            # conversation对象已包含完整的会话上下文和人格信息
+            # 构建完整的重试请求参数，确保所有原始参数都被传递
             kwargs = {}
             
             # 必须传递prompt参数
             kwargs["prompt"] = stored_params["prompt"]
             
-            # conversation是状态的唯一真实来源
+            # 重要修复：必须传递system_prompt以保持人设
+            if "system_prompt" in stored_params and stored_params["system_prompt"]:
+                kwargs["system_prompt"] = stored_params["system_prompt"]
+            
+            # conversation是状态的关键组件
             if "conversation" in stored_params and stored_params["conversation"]:
                 kwargs["conversation"] = stored_params["conversation"]
+                
+                # 第二处修改（重试阶段）：将sender信息应用到conversation
+                # 根据AstrBot规范，sender信息通常需要设置到conversation对象中
+                if "sender" in stored_params and stored_params["sender"]:
+                    sender_info = stored_params["sender"]
+                    # 如果conversation有设置sender信息的方法，则调用
+                    # 注意：这里需要检查conversation对象的具体属性和方法
+                    if hasattr(kwargs["conversation"], "set_sender"):
+                        kwargs["conversation"].set_sender(sender_info)
+                    elif hasattr(kwargs["conversation"], "sender"):
+                        # 直接设置sender属性
+                        kwargs["conversation"].sender = sender_info
+                    elif hasattr(kwargs["conversation"], "metadata"):
+                        # 或者设置到metadata中
+                        if not kwargs["conversation"].metadata:
+                            kwargs["conversation"].metadata = {}
+                        kwargs["conversation"].metadata["sender"] = sender_info
+                    else:
+                        # 如果conversation不支持，尝试作为独立参数传递
+                        kwargs["sender"] = sender_info
+                        logger.debug("将sender信息作为独立参数传递")
             else:
                 # 如果没有conversation，添加contexts参数
                 kwargs["contexts"] = stored_params["contexts"]
                 
+                # 在没有conversation的情况下，也尝试传递sender信息
+                if "sender" in stored_params and stored_params["sender"]:
+                    kwargs["sender"] = stored_params["sender"]
+                    logger.debug("在无conversation模式下传递sender信息")
+                
             # 添加其他必要参数
             kwargs["image_urls"] = stored_params["image_urls"]
             kwargs["func_tool"] = stored_params["func_tool"]
+            
+            # 传递其他可能存在的参数，确保重试请求的完整性
+            # 这些参数虽然不是存储在stored_params中，但可以从provider的默认配置获取
+            # 如：model, temperature, max_tokens等
 
             logger.debug(
-                f"正在使用存储的参数（通过conversation传递完整状态）进行重试... Prompt: '{stored_params['prompt'][:50]}...'"
+                f"正在使用存储的参数（包含sender信息）进行重试... Prompt: '{stored_params['prompt'][:50]}...'"
             )
 
             llm_response = await provider.text_chat(**kwargs)
