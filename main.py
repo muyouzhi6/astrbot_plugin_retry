@@ -171,14 +171,8 @@ class IntelligentRetry(Star):
         return f"{session_info}_{message_id}_{content_hash}"
 
     @filter.on_llm_request()
-    async def store_llm_request(self, event: AstrMessageEvent, *args, **kwargs):
+    async def store_llm_request(self, event: AstrMessageEvent, req):
         """存储LLM请求参数（借鉴v2版本的双钩子机制）"""
-        # 从args中安全提取ProviderRequest
-        req = args[0] if args and len(args) > 0 else None
-        if req is None:
-            logger.warning("store_llm_request: No ProviderRequest found in args")
-            return
-
         # 检查类型 - 使用鸭子类型检查而不是isinstance以避免导入问题
         if not hasattr(req, "prompt") or not hasattr(req, "contexts"):
             logger.warning(
@@ -196,13 +190,12 @@ class IntelligentRetry(Star):
 
         # 存储请求参数 - 注意：此时system_prompt已包含完整的人格信息
         self.pending_requests[request_key] = {
-            "prompt": req.prompt,  # 使用req.prompt而不是event.message_str，保持人格处理后的版本
+            "prompt": req.prompt,
             "contexts": getattr(req, "contexts", []),
             "image_urls": image_urls,
-            "system_prompt": getattr(req, "system_prompt", ""),  # 这里已包含人格信息
+            "system_prompt": getattr(req, "system_prompt", ""),
             "func_tool": getattr(req, "func_tool", None),
             "unified_msg_origin": event.unified_msg_origin,
-            # 保存完整的会话信息以确保重试时能正确恢复人格
             "conversation": getattr(req, "conversation", None),
         }
 
@@ -586,24 +579,24 @@ class IntelligentRetry(Star):
             return None
 
         try:
-            # 构建重试请求参数，确保包含完整的人格信息
-            kwargs = {
-                "prompt": stored_params["prompt"],
-                "contexts": stored_params["contexts"],
-                "image_urls": stored_params["image_urls"],
-                "func_tool": stored_params["func_tool"],
-            }
-
-            # 使用存储的完整system_prompt（已包含人格信息）
-            if stored_params["system_prompt"]:
-                kwargs["system_prompt"] = stored_params["system_prompt"]
-
-            # 如果有会话信息，也传递给provider（某些provider可能需要）
+            # 主要依赖conversation对象来传递会话状态
+            # conversation对象已包含完整的会话上下文和人格信息
+            kwargs = {}
+            
+            # conversation是状态的唯一真实来源
             if "conversation" in stored_params and stored_params["conversation"]:
                 kwargs["conversation"] = stored_params["conversation"]
+            else:
+                # 如果没有conversation，构建基础参数
+                kwargs["prompt"] = stored_params["prompt"]
+                kwargs["contexts"] = stored_params["contexts"]
+                
+            # 添加其他必要参数
+            kwargs["image_urls"] = stored_params["image_urls"]
+            kwargs["func_tool"] = stored_params["func_tool"]
 
             logger.debug(
-                f"正在使用存储的参数（含人格信息）进行重试... Prompt: '{stored_params['prompt'][:50]}...'"
+                f"正在使用存储的参数（通过conversation传递完整状态）进行重试... Prompt: '{stored_params['prompt'][:50]}...'"
             )
 
             llm_response = await provider.text_chat(**kwargs)
@@ -947,14 +940,8 @@ class IntelligentRetry(Star):
             logger.debug("未配置兜底回复，事件已终止")
 
     @filter.on_llm_response(priority=10)
-    async def retry_on_llm_response(self, event: AstrMessageEvent, *args, **kwargs):
+    async def retry_on_llm_response(self, event: AstrMessageEvent, resp):
         """在LLM响应阶段进行重试检测和处理"""
-        # 从args中安全提取LLMResponse
-        resp = args[0] if args and len(args) > 0 else None
-        if resp is None:
-            logger.warning("retry_on_llm_response: No LLMResponse found in args")
-            return
-
         # 检查类型 - 使用鸭子类型检查而不是isinstance以避免导入问题
         if not hasattr(resp, "completion_text"):
             logger.warning(
@@ -1129,4 +1116,3 @@ class IntelligentRetry(Star):
 
 
 # --- END OF FILE main.py ---
-
