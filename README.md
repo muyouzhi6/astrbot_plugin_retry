@@ -1,11 +1,11 @@
 # AstrBot 智能重试插件 (Intelligent Retry)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/Version-2.9.7-blue)](https://github.com/muyouzhi6/astrbot_plugin_retry)
+[![Version](https://img.shields.io/badge/Version-2.9.8-blue)](https://github.com/muyouzhi6/astrbot_plugin_retry)
 
 一个为 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 设计的高性能智能重试插件，专门解决大语言模型（LLM）交互中的不稳定问题。通过三层智能检测系统和并发重试机制，显著提升对话体验和响应速度。
 
-**当前版本：v2.9.7** - 🔥 **重要修复**：人格丢失和TTS插件兼容性问题
+**当前版本：v2.9.8** - 🔥 **重要修复**：人格丢失和TTS插件兼容性问题
 
 ## ✨ 核心特性
 
@@ -234,4 +234,5 @@ A: 可以，通过配置不同的检测选项实现精确控制。
 ---
 
 *让AI对话更稳定，让等待时间更短暂* 🚀
+
 
