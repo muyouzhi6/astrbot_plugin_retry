@@ -208,6 +208,33 @@ class IntelligentRetry(Star):
             # 如果有其他sender相关字段也可以在这里添加
         }
         
+        # 新增：存储Provider的特定参数（model, temperature, max_tokens等）
+        # 这些参数对于保证重试的一致性至关重要
+        provider_params = {}
+        
+        # 提取常见的Provider参数
+        if hasattr(req, "model"):
+            provider_params["model"] = getattr(req, "model", None)
+        if hasattr(req, "temperature"):
+            provider_params["temperature"] = getattr(req, "temperature", None)
+        if hasattr(req, "max_tokens"):
+            provider_params["max_tokens"] = getattr(req, "max_tokens", None)
+        if hasattr(req, "top_p"):
+            provider_params["top_p"] = getattr(req, "top_p", None)
+        if hasattr(req, "top_k"):
+            provider_params["top_k"] = getattr(req, "top_k", None)
+        if hasattr(req, "frequency_penalty"):
+            provider_params["frequency_penalty"] = getattr(req, "frequency_penalty", None)
+        if hasattr(req, "presence_penalty"):
+            provider_params["presence_penalty"] = getattr(req, "presence_penalty", None)
+        if hasattr(req, "stop"):
+            provider_params["stop"] = getattr(req, "stop", None)
+        if hasattr(req, "stream"):
+            provider_params["stream"] = getattr(req, "stream", None)
+        
+        # 存储Provider参数
+        stored_params["provider_params"] = provider_params
+        
         self.pending_requests[request_key] = stored_params
 
         logger.debug(f"已存储LLM请求参数（含完整人格信息和sender信息）: {request_key}")
@@ -573,80 +600,107 @@ class IntelligentRetry(Star):
     async def _perform_retry_with_stored_params(
         self, request_key: str
     ) -> Optional[Any]:
-        """使用存储的参数执行重试（借鉴v2版本的高效设计）"""
+        """使用存储的参数执行重试（重构版本：简化sender处理，增加参数验证）"""
         if request_key not in self.pending_requests:
             logger.warning(f"未找到存储的请求参数: {request_key}")
             return None
 
         stored_params = self.pending_requests[request_key]
+        
+        # === 参数验证阶段 ===
+        # 验证核心参数是否存在
+        required_params = ["prompt", "unified_msg_origin"]
+        missing_params = [p for p in required_params if p not in stored_params]
+        
+        if missing_params:
+            logger.error(
+                f"存储的参数缺少必要字段: {', '.join(missing_params)}。"
+                f"这可能是插件版本不兼容导致的。跳过重试。"
+            )
+            return None
+        
+        # 验证prompt不为空
+        if not stored_params["prompt"] or not str(stored_params["prompt"]).strip():
+            logger.error("存储的prompt参数为空，无法进行重试")
+            return None
+        
+        # 获取Provider
         provider = self.context.get_using_provider()
-
         if not provider:
             logger.warning("LLM提供商未启用，无法重试。")
             return None
 
         try:
-            # 构建完整的重试请求参数，确保所有原始参数都被传递
-            kwargs = {}
+            # === 构建重试参数 ===
+            kwargs = {
+                "prompt": stored_params["prompt"],
+                "image_urls": stored_params.get("image_urls", []),
+                "func_tool": stored_params.get("func_tool", None),
+            }
             
-            # 必须传递prompt参数
-            kwargs["prompt"] = stored_params["prompt"]
-            
-            # 重要修复：必须传递system_prompt以保持人设
-            if "system_prompt" in stored_params and stored_params["system_prompt"]:
+            # 处理system_prompt（保持人设）
+            if stored_params.get("system_prompt"):
                 kwargs["system_prompt"] = stored_params["system_prompt"]
             
-            # conversation是状态的关键组件
-            if "conversation" in stored_params and stored_params["conversation"]:
-                kwargs["conversation"] = stored_params["conversation"]
-                
-                # 第二处修改（重试阶段）：将sender信息应用到conversation
-                # 根据AstrBot规范，sender信息通常需要设置到conversation对象中
-                if "sender" in stored_params and stored_params["sender"]:
-                    sender_info = stored_params["sender"]
-                    # 如果conversation有设置sender信息的方法，则调用
-                    # 注意：这里需要检查conversation对象的具体属性和方法
-                    if hasattr(kwargs["conversation"], "set_sender"):
-                        kwargs["conversation"].set_sender(sender_info)
-                    elif hasattr(kwargs["conversation"], "sender"):
-                        # 直接设置sender属性
-                        kwargs["conversation"].sender = sender_info
-                    elif hasattr(kwargs["conversation"], "metadata"):
-                        # 或者设置到metadata中
-                        if not kwargs["conversation"].metadata:
-                            kwargs["conversation"].metadata = {}
-                        kwargs["conversation"].metadata["sender"] = sender_info
-                    else:
-                        # 如果conversation不支持，尝试作为独立参数传递
-                        kwargs["sender"] = sender_info
-                        logger.debug("将sender信息作为独立参数传递")
-            else:
-                # 如果没有conversation，添加contexts参数
-                kwargs["contexts"] = stored_params["contexts"]
-                
-                # 在没有conversation的情况下，也尝试传递sender信息
-                if "sender" in stored_params and stored_params["sender"]:
-                    kwargs["sender"] = stored_params["sender"]
-                    logger.debug("在无conversation模式下传递sender信息")
-                
-            # 添加其他必要参数
-            kwargs["image_urls"] = stored_params["image_urls"]
-            kwargs["func_tool"] = stored_params["func_tool"]
+            # === 简化的sender处理逻辑 ===
+            # 策略：优先使用conversation，其次直接传递sender参数
+            conversation = stored_params.get("conversation")
+            sender_info = stored_params.get("sender", {})
             
-            # 传递其他可能存在的参数，确保重试请求的完整性
-            # 这些参数虽然不是存储在stored_params中，但可以从provider的默认配置获取
-            # 如：model, temperature, max_tokens等
+            if conversation:
+                kwargs["conversation"] = conversation
+                
+                # 标准方法：设置sender到conversation
+                if sender_info:
+                    self._attach_sender_to_conversation(conversation, sender_info)
+            else:
+                # 无conversation时，使用contexts
+                kwargs["contexts"] = stored_params.get("contexts", [])
+                
+                # 直接传递sender作为独立参数（某些Provider可能支持）
+                if sender_info:
+                    kwargs["sender"] = sender_info
+            
+            # === 恢复Provider特定参数 ===
+            if "provider_params" in stored_params:
+                provider_params = stored_params["provider_params"]
+                # 只添加非None的参数
+                for param_name, param_value in provider_params.items():
+                    if param_value is not None:
+                        kwargs[param_name] = param_value
+                        logger.debug(f"恢复Provider参数: {param_name}={param_value}")
 
             logger.debug(
-                f"正在使用存储的参数（包含sender信息）进行重试... Prompt: '{stored_params['prompt'][:50]}...'"
+                f"正在执行重试，prompt前50字符: '{stored_params['prompt'][:50]}...'"
             )
 
             llm_response = await provider.text_chat(**kwargs)
             return llm_response
 
         except Exception as e:
-            logger.error(f"重试调用LLM时发生错误: {e}")
+            logger.error(f"重试调用LLM时发生错误: {e}", exc_info=True)
             return None
+    
+    def _attach_sender_to_conversation(self, conversation, sender_info: dict) -> None:
+        """
+        将sender信息附加到conversation对象的辅助方法
+        采用最可靠的单一方法，避免复杂的条件判断
+        """
+        if not conversation or not sender_info:
+            return
+        
+        try:
+            # 标准方法：设置到metadata（大多数情况下都支持）
+            if not hasattr(conversation, "metadata"):
+                conversation.metadata = {}
+            elif conversation.metadata is None:
+                conversation.metadata = {}
+            
+            conversation.metadata["sender"] = sender_info
+            logger.debug("已将sender信息设置到conversation.metadata")
+            
+        except Exception as e:
+            logger.debug(f"设置sender信息时出现异常（已忽略）: {e}")
 
     async def _execute_retry_sequence(
         self, event: AstrMessageEvent, request_key: str
