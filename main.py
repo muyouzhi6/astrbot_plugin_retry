@@ -14,7 +14,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 @register(
     "intelligent_retry",
     "木有知 & 长安某 (优化增强版)",
-    "当LLM回复为空或包含特定错误关键词时，自动进行多次重试，使用原始请求参数确保完整重试。新增智能截断检测与并发重试功能，简化架构提升性能。v2.9.7: 修复人格丢失和TTS插件兼容性问题",
+    "当LLM回复为空或包含特定错误关键词时，自动进行多次重试，使用原始请求参数确保完整重试。新增智能截断检测与并发重试功能，简化架构提升性能。",
     "2.9.8",
 )
 class IntelligentRetry(Star):
@@ -1250,5 +1250,6 @@ class IntelligentRetry(Star):
 
 
 # --- END OF FILE main.py ---
+
 
 
