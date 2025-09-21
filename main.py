@@ -638,9 +638,34 @@ class IntelligentRetry(Star):
                 "func_tool": stored_params.get("func_tool", None),
             }
             
-            # 处理system_prompt（保持人设）
-            if stored_params.get("system_prompt"):
-                kwargs["system_prompt"] = stored_params["system_prompt"]
+            # === 鲁棒的 system_prompt 处理逻辑 ===
+            # 核心思路：优先实时获取，失败则回退到存储值
+            system_prompt = None
+            conversation = stored_params.get("conversation")
+
+            if conversation and hasattr(conversation, "persona_id") and conversation.persona_id:
+                try:
+                    # 使用 getattr 解决 Pylance 因类型提示不完整而误报的问题
+                    persona_mgr = getattr(self.context, "persona_manager", None)
+                    if persona_mgr:
+                        persona = await persona_mgr.get_persona(conversation.persona_id)
+                        if persona and persona.system_prompt:
+                            system_prompt = persona.system_prompt
+                            logger.debug(f"重试时成功从 Persona '{persona.persona_id}' 实时加载 system_prompt")
+                    else:
+                        logger.warning("重试时无法获取 persona_manager，将回退到存储值")
+                except Exception as e:
+                    logger.warning(f"重试时实时加载 Persona 失败，将回退到存储值: {e}")
+
+            # 如果实时获取失败，则使用存储的值作为兜底
+            if not system_prompt:
+                system_prompt = stored_params.get("system_prompt")
+                if system_prompt:
+                    logger.debug("重试时使用初次请求存储的 system_prompt 作为兜底")
+
+            # 只有在最终获取到 system_prompt 时才添加到参数中
+            if system_prompt:
+                kwargs["system_prompt"] = system_prompt
             
             # === 简化的sender处理逻辑 ===
             # 策略：优先使用conversation，其次直接传递sender参数
