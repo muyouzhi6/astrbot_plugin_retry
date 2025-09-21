@@ -1,5 +1,5 @@
 name: intelligent_retry
-desc: 智能LLM重试插件，支持截断检测、并发重试、人格保持。v2.9.7修复人格丢失和TTS兼容性问题 (优化增强版)
+desc: 智能LLM重试插件，支持截断检测、并发重试、人格保持。修复人格丢失和TTS兼容性问题 (优化增强版)
 version: 2.9.9
 author: 木有知 & 长安某 (优化增强版)
 repo: https://github.com/muyouzhi6/astrbot_plugin_retry
@@ -22,5 +22,6 @@ config:
     options:
       - fixed
       - exponential
+
 
 
