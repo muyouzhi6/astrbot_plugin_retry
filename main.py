@@ -2,22 +2,23 @@
 
 import asyncio
 import json
+import copy
 import re
+import hashlib
 from typing import Dict, Any, Optional
 
 import astrbot.api.message_components as Comp
 from astrbot.api import logger, AstrBotConfig
-from astrbot.api.star import Context, Star, register
-from astrbot.api.event import AstrMessageEvent, filter
-
-
-@register(
-    "intelligent_retry",
-    "木有知 & 长安某 (优化增强版)",
-    "当LLM回复为空或包含特定错误关键词时，自动进行多次重试，使用原始请求参数确保完整重试。新增智能截断检测与并发重试功能，简化架构提升性能。",
-    "2.9.9",
+from astrbot.api.star import Context, Star
+from astrbot.api.event import (
+    AstrMessageEvent,
+    filter,
+    MessageEventResult,
+    ResultContentType,
 )
-class IntelligentRetry(Star):
+
+
+class Main(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
 
@@ -27,10 +28,14 @@ class IntelligentRetry(Star):
         # 解析配置
         self._parse_config(config)
 
+        # 从元数据动态获取版本号
+        metadata = getattr(self, "metadata", None)
+        self.version = metadata.version if metadata else "Unknown"
+
         logger.info(
-            f"已加载 [IntelligentRetry] 插件 v2.9.8 , "
+            f"已加载 [IntelligentRetry] 插件 v{self.version} , "
             f"将在LLM回复无效时自动重试 (最多 {self.max_attempts} 次)，使用原始请求参数确保完整的重试。"
-            f"截断检测模式: {self.truncation_detection_mode}, 并发重试: {'启用' if self.enable_concurrent_retry else '禁用'}"
+            f"并发重试: {'启用' if self.enable_concurrent_retry else '禁用'}"
         )
 
     def _parse_config(self, config: AstrBotConfig) -> None:
@@ -71,34 +76,7 @@ class IntelligentRetry(Star):
 
         # 截断重试配置
         self.enable_truncation_retry = bool(
-            config.get("enable_truncation_retry", False)
-        )
-
-        # 新增：截断检测模式和选项
-        self.truncation_detection_mode = (
-            config.get("truncation_detection_mode", "enhanced").lower().strip()
-        )
-        self.check_structural_integrity = bool(
-            config.get("check_structural_integrity", True)
-        )
-        self.check_content_type_specific = bool(
-            config.get("check_content_type_specific", True)
-        )
-        self.min_reasonable_length = max(
-            5, int(config.get("min_reasonable_length", 10))
-        )
-        self.code_block_detection = bool(config.get("code_block_detection", True))
-        self.quote_matching_detection = bool(
-            config.get("quote_matching_detection", True)
-        )
-
-        # 原有的正则表达式配置（保持向后兼容）
-        self.truncation_valid_tail_pattern = config.get(
-            "truncation_valid_tail_pattern",
-            r"[。！？!?,;:、，．…—\-\(\)\[\]'\""
-            "''\\w\\d_\u4e00-\u9fa5\\s\\t]$"
-            r"|\.(com|cn|org|net|io|ai|pdf|jpg|png|jpeg|gif|mp3|mp4|txt|zip|tar|gz|html|htm)$"
-            r"|https?://[\\w\.-]+$",
+            config.get("enable_truncation_retry", True)
         )
 
         # 并发重试配置 - 遵循官方性能和安全规范
@@ -155,22 +133,23 @@ class IntelligentRetry(Star):
         return codes
 
     def _get_request_key(self, event: AstrMessageEvent) -> str:
-        """生成稳定的请求唯一标识符，遵循AstrBot事件处理规范"""
-        import hashlib
-
+        """生成稳定的请求唯一标识符，修复哈希碰撞风险 (v2.9.9 加固)"""
+    
         # 使用AstrBot官方推荐的事件属性组合
         message_id = getattr(event.message_obj, "message_id", "")
         timestamp = getattr(event.message_obj, "timestamp", 0)
         session_info = event.unified_msg_origin  # 官方推荐的会话标识
+        sender_id = event.get_sender_id()
+    
+        # 引入 sender_id 和 session_info 确保全局唯一性，彻底防止哈希碰撞
+        # 使用更清晰的格式和更强的哈希算法
+        key_material = f"{sender_id}:{session_info}:{timestamp}:{event.message_str}"
+        content_hash = hashlib.sha256(key_material.encode()).hexdigest()[:16]
+    
+        # 使用带命名空间的格式，增加可读性
+        return f"retry_req:{sender_id}:{session_info}:{message_id}:{content_hash}"
 
-        # 生成稳定的内容hash
-        content_hash = hashlib.md5(
-            f"{event.message_str}{timestamp}".encode()
-        ).hexdigest()[:8]
-
-        return f"{session_info}_{message_id}_{content_hash}"
-
-    @filter.on_llm_request()
+    @filter.on_llm_request(priority=200)
     async def store_llm_request(self, event: AstrMessageEvent, req):
         """存储LLM请求参数（借鉴v2版本的双钩子机制）"""
         # 检查类型 - 使用鸭子类型检查而不是isinstance以避免导入问题
@@ -191,7 +170,8 @@ class IntelligentRetry(Star):
         # 存储请求参数 - 注意：此时system_prompt已包含完整的人格信息
         stored_params = {
             "prompt": req.prompt,
-            "contexts": getattr(req, "contexts", []),
+            # 确认使用深拷贝，防止上下文在重试过程中被外部修改污染 (v2.9.9 加固)
+            "contexts": copy.deepcopy(getattr(req, "contexts", [])),
             "image_urls": image_urls,
             "system_prompt": getattr(req, "system_prompt", ""),
             "func_tool": getattr(req, "func_tool", None),
@@ -238,297 +218,6 @@ class IntelligentRetry(Star):
         self.pending_requests[request_key] = stored_params
 
         logger.debug(f"已存储LLM请求参数（含完整人格信息和sender信息）: {request_key}")
-
-    def _is_truncated(self, text_or_response) -> bool:
-        """主入口方法：多层截断检测，支持文本和LLMResponse对象"""
-
-        # 新增：处理LLMResponse对象
-        if hasattr(text_or_response, "completion_text"):
-            # 这是一个LLMResponse对象
-            resp = text_or_response
-            text = resp.completion_text or ""
-
-            # 检查截断标记
-            if "[TRUNCATED_BY_LENGTH]" in text:
-                logger.debug("LLMResponse对象中检测到截断标记")
-                return True
-
-            # 检查raw_completion
-            if (
-                hasattr(resp, "raw_completion")
-                and resp.raw_completion
-                and hasattr(resp.raw_completion, "choices")
-                and resp.raw_completion.choices
-                and getattr(resp.raw_completion.choices[0], "finish_reason", None)
-                == "length"
-            ):
-                logger.debug("LLMResponse对象的raw_completion检测到length截断")
-                return True
-        else:
-            # 这是普通文本
-            text = text_or_response
-
-        # 继续现有的检测逻辑...
-        if not text or not text.strip():
-            return False
-
-        # 如果内容太短，一般不认为是截断（除非明显不完整）
-        if len(text.strip()) < self.min_reasonable_length:
-            return False
-
-        try:
-            # 根据检测模式选择策略
-            if self.truncation_detection_mode == "basic":
-                return self._detect_character_level_truncation(text)
-            elif self.truncation_detection_mode == "enhanced":
-                # 多层检测：字符级 + 结构级 + 内容类型
-                return (
-                    self._detect_character_level_truncation(text)
-                    or self._detect_structural_truncation(text)
-                    or self._detect_content_type_truncation(text)
-                )
-            elif self.truncation_detection_mode == "strict":
-                # 严格模式：所有检测都要通过
-                return self._detect_character_level_truncation(
-                    text
-                ) and self._detect_structural_truncation(text)
-            else:
-                # 默认使用基础模式
-                return self._detect_character_level_truncation(text)
-        except Exception as e:
-            logger.warning(f"截断检测发生错误，回退到基础模式: {e}")
-            return self._detect_character_level_truncation(text)
-
-    def _detect_character_level_truncation(self, text: str) -> bool:
-        """第一层：增强的字符级截断检测"""
-        if not text or not text.strip():
-            return False
-
-        # 只检测最后一行（防止多段回复）
-        last_line = text.strip().splitlines()[-1]
-
-        # 使用增强的正则表达式
-        enhanced_pattern = (
-            # 原有的模式
-            self.truncation_valid_tail_pattern
-            +
-            # 新增的技术符号
-            r"|[->=:]+$|[}\])]$|[0-9]+[%°]?$"
-            +
-            # 新增的代码文件后缀
-            r"|\.(py|js|ts|java|cpp|c|h|css|html|json|xml|yaml|yml|md|rst)$"
-        )
-
-        if re.search(enhanced_pattern, last_line, re.IGNORECASE):
-            return False
-        return True
-
-    def _detect_structural_truncation(self, text: str) -> bool:
-        """第二层：结构完整性检测"""
-        if not self.check_structural_integrity:
-            return False
-
-        try:
-            # 检查括号匹配
-            if not self._check_bracket_balance(text):
-                logger.debug("检测到括号不匹配，可能被截断")
-                return True
-
-            # 检查引号匹配
-            if self.quote_matching_detection and not self._check_quote_balance(text):
-                logger.debug("检测到引号不匹配，可能被截断")
-                return True
-
-            # 检查代码块完整性
-            if self.code_block_detection and not self._check_markdown_completeness(
-                text
-            ):
-                logger.debug("检测到代码块不完整，可能被截断")
-                return True
-
-            return False
-        except Exception as e:
-            logger.debug(f"结构检测出错，跳过: {e}")
-            return False
-
-    def _detect_content_type_truncation(self, text: str) -> bool:
-        """第三层：内容类型自适应检测"""
-        if not self.check_content_type_specific:
-            return False
-
-        try:
-            content_type = self._get_content_type(text)
-
-            if content_type == "code":
-                return self._is_code_truncated(text)
-            elif content_type == "list":
-                return self._is_list_truncated(text)
-            elif content_type == "table":
-                return self._is_table_truncated(text)
-            elif content_type == "json":
-                return self._is_json_truncated(text)
-            else:
-                # 自然语言检测
-                return self._is_natural_language_truncated(text)
-        except Exception as e:
-            logger.debug(f"内容类型检测出错，跳过: {e}")
-            return False
-
-    def _check_bracket_balance(self, text: str) -> bool:
-        """检查括号是否平衡"""
-        brackets = {"(": ")", "[": "]", "{": "}", "<": ">"}
-        stack = []
-
-        for char in text:
-            if char in brackets:
-                stack.append(char)
-            elif char in brackets.values():
-                if not stack:
-                    return False
-                last_open = stack.pop()
-                if brackets[last_open] != char:
-                    return False
-
-        # 如果还有未匹配的开括号，可能被截断
-        return len(stack) == 0
-
-    def _check_quote_balance(self, text: str) -> bool:
-        """检查引号是否平衡"""
-        # 检查双引号
-        double_quotes = text.count('"') - text.count('\\"')  # 排除转义引号
-        if double_quotes % 2 != 0:
-            return False
-
-        # 检查单引号（更复杂，因为可能是撇号）
-        single_quotes = text.count("'") - text.count("\\'")
-        # 对于单引号，我们更宽松一些，只在明显不匹配时判断为截断
-        if single_quotes > 2 and single_quotes % 2 != 0:
-            return False
-
-        return True
-
-    def _check_markdown_completeness(self, text: str) -> bool:
-        """检查Markdown结构完整性"""
-        # 检查代码块
-        code_blocks = text.count("```")
-        if code_blocks % 2 != 0:
-            return False
-
-        # 检查行内代码
-        inline_code = text.count("`") - text.count("\\`")
-        if inline_code % 2 != 0:
-            return False
-
-        return True
-
-    def _get_content_type(self, text: str) -> str:
-        """识别内容类型"""
-        text_lower = text.lower().strip()
-
-        # 代码检测
-        if (
-            text.count("```") >= 2
-            or re.search(
-                r"^\s*(def|function|class|import|from|#include)", text, re.MULTILINE
-            )
-            or text.count("{") > 2
-            and text.count("}") > 2
-        ):
-            return "code"
-
-        # JSON检测
-        if (text_lower.startswith("{") and text_lower.endswith("}")) or (
-            text_lower.startswith("[") and text_lower.endswith("]")
-        ):
-            return "json"
-
-        # 列表检测
-        if re.search(r"^\s*[-*+]\s+", text, re.MULTILINE) or re.search(
-            r"^\s*\d+\.\s+", text, re.MULTILINE
-        ):
-            return "list"
-
-        # 表格检测
-        if "|" in text and text.count("|") > 3:
-            return "table"
-
-        return "natural_language"
-
-    def _is_code_truncated(self, text: str) -> bool:
-        """检测代码是否被截断"""
-        # 检查是否在字符串中间截断
-        if text.endswith('"') is False and '"' in text and text.count('"') % 2 == 1:
-            return True
-
-        # 检查是否在注释中间截断
-        lines = text.splitlines()
-        if (
-            lines
-            and lines[-1].strip().startswith("#")
-            and not lines[-1].strip().endswith(".")
-        ):
-            return True
-
-        return False
-
-    def _is_list_truncated(self, text: str) -> bool:
-        """检测列表是否被截断"""
-        lines = text.strip().splitlines()
-        if not lines:
-            return False
-
-        last_line = lines[-1].strip()
-        # 如果最后一行是未完成的列表项
-        if re.match(r"^\s*[-*+]\s*$", last_line) or re.match(
-            r"^\s*\d+\.\s*$", last_line
-        ):
-            return True
-
-        return False
-
-    def _is_table_truncated(self, text: str) -> bool:
-        """检测表格是否被截断"""
-        lines = text.strip().splitlines()
-        if not lines:
-            return False
-
-        # 检查最后一行是否是不完整的表格行
-        last_line = lines[-1]
-        if "|" in last_line and not last_line.strip().endswith("|"):
-            return True
-
-        return False
-
-    def _is_json_truncated(self, text: str) -> bool:
-        """检测JSON是否被截断"""
-        try:
-            json.loads(text)
-            return False  # 能解析说明完整
-        except json.JSONDecodeError:
-            return True  # 解析失败可能是截断
-
-    def _is_natural_language_truncated(self, text: str) -> bool:
-        """检测自然语言是否被截断"""
-        # 如果以连接词结尾，可能被截断
-        conjunctions = [
-            "and",
-            "or",
-            "but",
-            "however",
-            "therefore",
-            "而且",
-            "但是",
-            "然而",
-            "因此",
-            "所以",
-        ]
-        last_words = text.strip().split()[-3:]  # 检查最后几个词
-
-        for word in last_words:
-            if word.lower() in conjunctions:
-                return True
-
-        return False
 
     def _extract_status_code(self, text: str) -> Optional[int]:
         """从错误文本中提取 4xx/5xx 状态码"""
@@ -638,53 +327,41 @@ class IntelligentRetry(Star):
                 "func_tool": stored_params.get("func_tool", None),
             }
             
-            # === 鲁棒的 system_prompt 处理逻辑 ===
-            # 核心思路：优先实时获取，失败则回退到存储值
-            system_prompt = None
+            # === 鲁棒的 system_prompt 处理逻辑 (v2.9.9 修复竞态条件) ===
+            # 核心思路：优先使用快照，失败则尝试实时获取作为兜底
+            system_prompt = stored_params.get("system_prompt")
             conversation = stored_params.get("conversation")
 
-            if conversation and hasattr(conversation, "persona_id") and conversation.persona_id:
-                try:
-                    # 使用 getattr 解决 Pylance 因类型提示不完整而误报的问题
-                    persona_mgr = getattr(self.context, "persona_manager", None)
-                    if persona_mgr:
-                        persona = await persona_mgr.get_persona(conversation.persona_id)
-                        if persona and persona.system_prompt:
-                            system_prompt = persona.system_prompt
-                            logger.debug(f"重试时成功从 Persona '{persona.persona_id}' 实时加载 system_prompt")
-                    else:
-                        logger.warning("重试时无法获取 persona_manager，将回退到存储值")
-                except Exception as e:
-                    logger.warning(f"重试时实时加载 Persona 失败，将回退到存储值: {e}")
-
-            # 如果实时获取失败，则使用存储的值作为兜底
-            if not system_prompt:
-                system_prompt = stored_params.get("system_prompt")
-                if system_prompt:
-                    logger.debug("重试时使用初次请求存储的 system_prompt 作为兜底")
+            if system_prompt:
+                logger.debug("重试时优先使用初次请求存储的 system_prompt 快照")
+            else:
+                # 如果快照中没有，再尝试实时获取作为兜底
+                logger.debug("快照中无 system_prompt，尝试实时获取作为兜底")
+                if conversation and hasattr(conversation, "persona_id") and conversation.persona_id:
+                    try:
+                        persona_mgr = getattr(self.context, "persona_manager", None)
+                        if persona_mgr:
+                            persona = await persona_mgr.get_persona(conversation.persona_id)
+                            if persona and persona.system_prompt:
+                                system_prompt = persona.system_prompt
+                                logger.debug(f"重试时成功从 Persona '{persona.persona_id}' 实时加载 system_prompt 作为兜底")
+                        else:
+                            logger.warning("重试时无法获取 persona_manager")
+                    except Exception as e:
+                        logger.warning(f"重试时实时加载 Persona 失败: {e}")
 
             # 只有在最终获取到 system_prompt 时才添加到参数中
             if system_prompt:
                 kwargs["system_prompt"] = system_prompt
             
             # === 简化的sender处理逻辑 ===
-            # 策略：优先使用conversation，其次直接传递sender参数
+            # 策略：优先使用conversation，如果不存在则使用contexts
             conversation = stored_params.get("conversation")
-            sender_info = stored_params.get("sender", {})
-            
             if conversation:
                 kwargs["conversation"] = conversation
-                
-                # 标准方法：设置sender到conversation
-                if sender_info:
-                    self._attach_sender_to_conversation(conversation, sender_info)
             else:
                 # 无conversation时，使用contexts
                 kwargs["contexts"] = stored_params.get("contexts", [])
-                
-                # 直接传递sender作为独立参数（某些Provider可能支持）
-                if sender_info:
-                    kwargs["sender"] = sender_info
             
             # === 恢复Provider特定参数 ===
             if "provider_params" in stored_params:
@@ -705,27 +382,6 @@ class IntelligentRetry(Star):
         except Exception as e:
             logger.error(f"重试调用LLM时发生错误: {e}", exc_info=True)
             return None
-    
-    def _attach_sender_to_conversation(self, conversation, sender_info: dict) -> None:
-        """
-        将sender信息附加到conversation对象的辅助方法
-        采用最可靠的单一方法，避免复杂的条件判断
-        """
-        if not conversation or not sender_info:
-            return
-        
-        try:
-            # 标准方法：设置到metadata（大多数情况下都支持）
-            if not hasattr(conversation, "metadata"):
-                conversation.metadata = {}
-            elif conversation.metadata is None:
-                conversation.metadata = {}
-            
-            conversation.metadata["sender"] = sender_info
-            logger.debug("已将sender信息设置到conversation.metadata")
-            
-        except Exception as e:
-            logger.debug(f"设置sender信息时出现异常（已忽略）: {e}")
 
     async def _execute_retry_sequence(
         self, event: AstrMessageEvent, request_key: str
@@ -810,9 +466,6 @@ class IntelligentRetry(Star):
                 if new_text and not has_error:
                     logger.info(f"第 {attempt} 次重试成功，生成有效回复")
                     # 确保重试结果被正确标记为LLM结果，以便TTS等插件能正确处理
-                    from astrbot.api.event import MessageEventResult
-                    from astrbot.api.event import ResultContentType
-
                     result = MessageEventResult()
                     result.message(new_text)
                     result.result_content_type = ResultContentType.LLM_RESULT
@@ -1001,9 +654,6 @@ class IntelligentRetry(Star):
             # 检查最终结果 - 遵循官方结果处理规范
             if first_valid_result:
                 # 确保并发重试结果也被正确标记为LLM结果
-                from astrbot.api.event import MessageEventResult
-                from astrbot.api.event import ResultContentType
-
                 result = MessageEventResult()
                 result.message(first_valid_result)
                 result.result_content_type = ResultContentType.LLM_RESULT
@@ -1028,9 +678,6 @@ class IntelligentRetry(Star):
 
             # 检查是否有结果可用
             if first_valid_result:
-                from astrbot.api.event import MessageEventResult
-                from astrbot.api.event import ResultContentType
-
                 result = MessageEventResult()
                 result.message(first_valid_result)
                 result.result_content_type = ResultContentType.LLM_RESULT
@@ -1047,9 +694,6 @@ class IntelligentRetry(Star):
         # 发送兜底回复
         if self.fallback_reply and self.fallback_reply.strip():
             # 确保兜底回复也被标记为LLM结果
-            from astrbot.api.event import MessageEventResult
-            from astrbot.api.event import ResultContentType
-
             result = MessageEventResult()
             result.message(self.fallback_reply.strip())
             result.result_content_type = ResultContentType.LLM_RESULT
@@ -1091,55 +735,23 @@ class IntelligentRetry(Star):
                 "[TRUNCATED_BY_LENGTH]", ""
             ).strip()
 
-        # 核心修改：更智能的截断检测 - 必须同时满足 finish_reason 和文本特征
-        elif (
-            self.enable_truncation_retry
-            and resp  # 确保 resp 对象存在
-            and hasattr(resp, "finish_reason")  # 首先检查是否有 finish_reason 属性
-            and resp.finish_reason == "length"  # 核心条件：finish_reason 必须是 'length'
+        # 核心修改：简化并加强截断检测
+        # 唯一的、最可靠的依据是服务商返回的 finish_reason
+        elif self.enable_truncation_retry and (
+            (hasattr(resp, "finish_reason") and resp.finish_reason == "length")
+            or (
+                hasattr(resp, "raw_completion")
+                and resp.raw_completion
+                and hasattr(resp.raw_completion, "choices")
+                and resp.raw_completion.choices
+                and getattr(resp.raw_completion.choices[0], "finish_reason", None)
+                == "length"
+            )
         ):
-            # finish_reason 是 'length'，现在检查文本特征作为辅助判断
-            if resp.completion_text and resp.completion_text.strip():
-                # 使用现有的文本截断检测作为辅助判断
-                if self._is_truncated(resp.completion_text):
-                    should_retry = True
-                    logger.info(
-                        f"检测到LLM响应被截断（finish_reason='length' 且文本特征符合）。"
-                        f"内容结尾: {resp.completion_text[-20:]}"
-                    )
-                else:
-                    logger.debug(
-                        "虽然 finish_reason='length'，但文本看起来是完整的，不触发重试"
-                    )
-            else:
-                # finish_reason 是 'length' 但没有文本内容，这种情况应该重试
-                should_retry = True
-                logger.info("检测到 finish_reason='length' 且响应为空，需要重试")
-        
-        # 检查 raw_completion 中的 finish_reason（兼容不同的响应结构）
-        elif (
-            self.enable_truncation_retry
-            and hasattr(resp, "raw_completion")
-            and resp.raw_completion
-            and hasattr(resp.raw_completion, "choices")
-            and resp.raw_completion.choices
-            and getattr(resp.raw_completion.choices[0], "finish_reason", None) == "length"
-        ):
-            # 同样需要检查文本特征
-            if resp.completion_text and resp.completion_text.strip():
-                if self._is_truncated(resp.completion_text):
-                    should_retry = True
-                    logger.info(
-                        f"检测到raw_completion中的length截断且文本特征符合。"
-                        f"内容结尾: {resp.completion_text[-20:]}"
-                    )
-                else:
-                    logger.debug(
-                        "虽然 raw_completion.finish_reason='length'，但文本看起来是完整的，不触发重试"
-                    )
-            else:
-                should_retry = True
-                logger.info("检测到 raw_completion.finish_reason='length' 且响应为空，需要重试")
+            should_retry = True
+            logger.info(
+                "检测到LLM响应因达到最大长度而被截断 (finish_reason='length')，需要重试。"
+            )
 
         elif not resp.completion_text or not resp.completion_text.strip():
             # 空回复需要重试
@@ -1147,8 +759,6 @@ class IntelligentRetry(Star):
             logger.debug("检测到空的LLM响应，需要重试")
         else:
             # 如果有文本内容，创建一个临时result对象来检测其他错误情况（不包括截断）
-            from astrbot.api.event import MessageEventResult
-
             temp_result = MessageEventResult()
             temp_result.chain = [Comp.Plain(text=resp.completion_text)]
 
@@ -1164,23 +774,19 @@ class IntelligentRetry(Star):
         retry_success = await self._execute_retry_sequence(event, request_key)
 
         if retry_success:
-            # 重试成功，更新LLM响应
-            result = event.get_result()
-            if result and result.chain:
-                # 更新completion_text
-                text_parts = [
-                    comp.text
-                    for comp in result.chain
-                    if isinstance(comp, Comp.Plain) and hasattr(comp, "text")
-                ]
-                if text_parts:
-                    resp.completion_text = "".join(text_parts)
-                    logger.info("LLM响应已通过重试更新")
+            # 重试成功，新的结果已在 event 中通过 set_result() 设置。
+            # 我们相信框架会优先处理 set_result 的结果，因此无需再修改原始的 resp 对象。
+            # 这是一个更纯净、更符合框架设计理念的做法。
+            logger.info("LLM响应已通过重试更新，框架将使用新设置的结果。")
         else:
             # 重试失败，发送兜底回复
             if self.fallback_reply and self.fallback_reply.strip():
-                resp.completion_text = self.fallback_reply.strip()
-                logger.info("重试失败，使用兜底回复")
+                # 统一结果处理：创建新的 MessageEventResult 并调用 event.set_result()
+                result = MessageEventResult()
+                result.message(self.fallback_reply.strip())
+                result.result_content_type = ResultContentType.LLM_RESULT
+                event.set_result(result)
+                logger.info("重试失败，已通过 set_result 设置兜底回复")
             else:
                 # 如果没有兜底回复，保持原样但记录日志
                 logger.warning("重试失败且未配置兜底回复")

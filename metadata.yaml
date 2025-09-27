@@ -1,27 +1,5 @@
 name: intelligent_retry
-desc: 智能LLM重试插件，支持截断检测、并发重试、人格保持。修复人格丢失和TTS兼容性问题 (优化增强版)
-version: 2.9.9
+desc: 当LLM回复为空或包含特定错误关键词时，自动进行多次重试，使用原始请求参数确保完整重试。新增智能截断检测与并发重试功能，简化架构提升性能。
 author: 木有知 & 长安某 (优化增强版)
+version: 2.9.9
 repo: https://github.com/muyouzhi6/astrbot_plugin_retry
-config:
-  - key: enable_truncation_retry
-    name: 启用截断重试
-    desc: 开启后，检测到回复结尾不是常见标点/字母/数字/文件后缀/网址时自动重试（如 Gemini 截断），建议仅在遇到相关问题时开启。
-    type: bool
-    default: false
-  - key: truncation_valid_tail_pattern
-    name: 截断判定合法结尾正则
-    desc: 用于判定回复结尾是否完整，支持自定义正则，默认已覆盖常见标点、字母、数字、文件后缀、网址等。
-    type: string
-    default: "[。！？!?,.\\w\\d\\u4e00-\\u9fa5]$|\\.(com|cn|org|net|io|ai|pdf|jpg|png|jpeg|gif|mp3|mp4|txt|zip|tar|gz|html|htm)$|https?://[\\w\\.-]+$"
-  - key: retry_delay_mode
-    name: 重试间隔模式
-    desc: 选择重试间隔的模式。fixed=每次重试间隔固定，exponential=指数退避（每次翻倍，最大30秒）。
-    type: string
-    default: exponential
-    options:
-      - fixed
-      - exponential
-
-
-

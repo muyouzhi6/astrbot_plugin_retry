@@ -1,9 +1,9 @@
 {
   "enable_truncation_retry": {
-    "description": "启用截断重试",
+    "description": "【推荐开启】启用截断重试",
     "type": "bool",
-    "hint": "开启后，检测到回复结尾不是常见标点/字母/数字/文件后缀/网址时自动重试（如 Gemini 截断），建议仅在遇到相关问题时开启。",
-    "default": false
+    "hint": "开启后，当LLM返回的 'finish_reason' 为 'length' 时，将自动触发重试。这是最可靠的截断判断方式。",
+    "default": true
   },
   "max_attempts": {
     "description": "最大重试次数",
@@ -21,7 +21,7 @@
     "description": "触发重试的错误关键词",
     "type": "text",
     "hint": "当LLM的回复中包含这些关键词时，将触发重试。请每行输入一个关键词，不区分大小写。",
-    "default": "api 返回的内容为空\nAPI 返回的 completion 由于内容安全过滤被拒绝(非 AstrBot)"
+    "default": "api 返回的内容为空\nAPI 返回的 completion 由于内容安全过滤被拒绝(非 AstrBot)\n调用失败\n[TRUNCATED_BY_LENGTH]\n达到最大长度限制而被截断"
   },
   "retryable_status_codes": {
     "description": "允许重试的HTTP状态码(每行一个)",
@@ -35,10 +35,9 @@
     "hint": "当错误文本中包含这些状态码时，将直接跳过重试。留空表示不限制。",
     "default": ""
   },
-
   "retry_delay_mode": {
     "description": "重试间隔模式",
-  "type": "string",
+    "type": "string",
     "hint": "选择重试间隔的模式。fixed=每次重试间隔固定，exponential=指数退避（每次翻倍，最大30秒）。",
     "default": "exponential",
     "enum": ["fixed", "exponential"]
@@ -49,83 +48,46 @@
     "hint": "当达到最大重试次数仍失败时，发送给用户的一段友好提示。留空则不发送消息。",
     "default": "抱歉，刚才遇到服务波动，我已自动为你重试多次仍未成功。请稍后再试或换个说法。"
   },
-  "truncation_detection_mode": {
-    "description": "截断检测模式",
-    "type": "string",
-    "hint": "选择截断检测的复杂度。basic=基础字符检测，enhanced=多层智能检测，strict=严格模式。",
-    "default": "enhanced",
-    "enum": ["basic", "enhanced", "strict"]
-  },
-  "check_structural_integrity": {
-    "description": "启用结构完整性检测",
-    "type": "bool",
-    "hint": "检测括号、引号等结构是否匹配，有助于发现被截断的代码或格式化内容。",
-    "default": true
-  },
-  "check_content_type_specific": {
-    "description": "启用内容类型自适应检测",
-    "type": "bool",
-    "hint": "根据内容类型（代码、列表、表格等）使用不同的截断检测策略。",
-    "default": true
-  },
-  "min_reasonable_length": {
-    "description": "合理回复最小长度",
-    "type": "int",
-    "hint": "短于此长度的回复一般不被认为是截断（除非明显不完整）。",
-    "default": 10
-  },
-  "code_block_detection": {
-    "description": "启用代码块检测",
-    "type": "bool",
-    "hint": "检测Markdown代码块是否完整（```配对）。",
-    "default": true
-  },
-  "quote_matching_detection": {
-    "description": "启用引号匹配检测",
-    "type": "bool",
-    "hint": "检测引号是否配对，有助于发现被截断的字符串。",
-    "default": true
-  },
   "enable_concurrent_retry": {
-    "description": "启用并发重试",
+    "description": "【高风险】启用并发重试",
     "type": "bool",
-    "hint": "开启后，在第一次重试失败后将使用并发模式进行剩余重试，可显著减少响应延迟但会增加token消耗。",
+    "hint": "【警告：可能导致API速率超限而被封禁！】开启后将使用并发模式进行重试，显著减少响应延迟但会急剧增加API请求频率和Token消耗。请谨慎开启并使用保守配置。",
     "default": false
   },
   "concurrent_retry_threshold": {
     "description": "并发重试触发阈值",
     "type": "int",
-    "hint": "在第几次重试失败后启动并发模式。例如设为1表示第1次重试失败后启动并发，设为2表示前2次重试失败后启动并发。设置为0则跳过顺序重试，直接使用并发模式。",
+    "hint": "【高风险配置】在第几次顺序重试失败后启动并发模式。设为0则直接并发。建议保持默认值1，以平衡速度与风险。",
     "default": 1
   },
   "concurrent_retry_count": {
-    "description": "并发请求数量",
+    "description": "基础并发请求数量",
     "type": "int",
-    "hint": "并发模式下同时发起的请求数量。数量越多响应越快但token消耗越大，建议2-3个。",
+    "hint": "【高风险配置】并发模式下同时发起的请求数量。数量越多响应越快但API风险和Token消耗越大。建议保守设置为2。",
     "default": 2
   },
   "concurrent_retry_timeout": {
     "description": "并发重试超时时间(秒)",
     "type": "int",
-    "hint": "等待并发请求完成的最大时间，超时后返回已获得的最佳结果。",
+    "hint": "【安全配置】等待并发请求完成的最大时间，超时后返回已获得的最佳结果，防止任务永久挂起。",
     "default": 30
   },
   "enable_exponential_growth": {
-    "description": "启用指数增长并发",
+    "description": "【极高风险】启用指数增长并发",
     "type": "bool",
-    "hint": "开启后，后续批次的并发数将指数增长(2,4,8...)，但有上限控制。关闭则保持固定并发数。",
-    "default": true
+    "hint": "【警告：极易触发API封禁！】开启后，后续批次的并发数将指数增长(2,4,8...)。除非明确知道API限制，否则强烈建议禁用此项！",
+    "default": false
   },
   "max_concurrent_multiplier": {
     "description": "最大并发倍数",
     "type": "int",
-    "hint": "指数增长的上限倍数，最大并发数=基础并发数×倍数。建议2-8之间。",
+    "hint": "【高风险配置】指数增长的上限倍数。建议保守设置为2-4。",
     "default": 4
   },
   "absolute_concurrent_limit": {
     "description": "绝对并发上限",
     "type": "int",
-    "hint": "无论如何计算，并发数都不会超过此值。建议5-20之间。",
+    "hint": "【安全配置】无论如何计算，并发数都不会超过此值。这是防止失控的最后一道防线。建议5-10之间。",
     "default": 10
   }
 }
