@@ -53,7 +53,10 @@ class Main(Star):
             "API 返回的 completion 由于内容安全过滤被拒绝(非 AstrBot)\n"
             "调用失败\n"
             "[TRUNCATED_BY_LENGTH]\n"
-            "达到最大长度限制而被截断"
+            "达到最大长度限制而被截断\n"
+            "exception\n"
+            "error\n"
+            "timeout"
         )
         keywords_str = config.get("error_keywords", default_keywords)
         self.error_keywords = [
@@ -176,7 +179,8 @@ class Main(Star):
             "system_prompt": getattr(req, "system_prompt", ""),
             "func_tool": getattr(req, "func_tool", None),
             "unified_msg_origin": event.unified_msg_origin,
-            "conversation": getattr(req, "conversation", None),
+            # Bug 1.1: Store conversation_id instead of live object
+            "conversation_id": getattr(req.conversation, "id", None) if hasattr(req, "conversation") else None,
         }
         
         # 显式存储sender信息（第一处修改：存储阶段）
@@ -322,7 +326,7 @@ class Main(Star):
         try:
             # === 构建重试参数 ===
             kwargs = {
-                "prompt": stored_params["prompt"],
+                # "prompt": stored_params["prompt"], # Bug 1.2: prompt is now part of contexts
                 "image_urls": stored_params.get("image_urls", []),
                 "func_tool": stored_params.get("func_tool", None),
             }
@@ -330,23 +334,26 @@ class Main(Star):
             # === 鲁棒的 system_prompt 处理逻辑 (v2.9.9 修复竞态条件) ===
             # 核心思路：优先使用快照，失败则尝试实时获取作为兜底
             system_prompt = stored_params.get("system_prompt")
-            conversation = stored_params.get("conversation")
+            conversation_id = stored_params.get("conversation_id")
+            unified_msg_origin = stored_params.get("unified_msg_origin")
 
             if system_prompt:
                 logger.debug("重试时优先使用初次请求存储的 system_prompt 快照")
             else:
                 # 如果快照中没有，再尝试实时获取作为兜底
                 logger.debug("快照中无 system_prompt，尝试实时获取作为兜底")
-                if conversation and hasattr(conversation, "persona_id") and conversation.persona_id:
+                if conversation_id and unified_msg_origin:
                     try:
-                        persona_mgr = getattr(self.context, "persona_manager", None)
-                        if persona_mgr:
-                            persona = await persona_mgr.get_persona(conversation.persona_id)
-                            if persona and persona.system_prompt:
-                                system_prompt = persona.system_prompt
-                                logger.debug(f"重试时成功从 Persona '{persona.persona_id}' 实时加载 system_prompt 作为兜底")
-                        else:
-                            logger.warning("重试时无法获取 persona_manager")
+                        conv_mgr = getattr(self.context, "conversation_manager", None)
+                        if conv_mgr:
+                            conversation = await conv_mgr.get_conversation(unified_msg_origin, conversation_id)
+                            if conversation and conversation.persona_id:
+                                persona_mgr = getattr(self.context, "persona_manager", None)
+                                if persona_mgr:
+                                    persona = await persona_mgr.get_persona(conversation.persona_id)
+                                    if persona and persona.system_prompt:
+                                        system_prompt = persona.system_prompt
+                                        logger.debug(f"重试时成功从 Persona '{conversation.persona_id}' 实时加载 system_prompt 作为兜底")
                     except Exception as e:
                         logger.warning(f"重试时实时加载 Persona 失败: {e}")
 
@@ -354,14 +361,12 @@ class Main(Star):
             if system_prompt:
                 kwargs["system_prompt"] = system_prompt
             
-            # === 简化的sender处理逻辑 ===
-            # 策略：优先使用conversation，如果不存在则使用contexts
-            conversation = stored_params.get("conversation")
-            if conversation:
-                kwargs["conversation"] = conversation
-            else:
-                # 无conversation时，使用contexts
-                kwargs["contexts"] = stored_params.get("contexts", [])
+            # === Bug 1.2: 上下文重建 ===
+            # 重建 contexts 列表，将存储的 prompt 作为最后一个 user 角色的消息追加
+            contexts = stored_params.get("contexts", [])
+            if stored_params.get("prompt"):
+                contexts.append({"role": "user", "content": stored_params["prompt"]})
+            kwargs["contexts"] = contexts
             
             # === 恢复Provider特定参数 ===
             if "provider_params" in stored_params:
@@ -382,6 +387,48 @@ class Main(Star):
         except Exception as e:
             logger.error(f"重试调用LLM时发生错误: {e}", exc_info=True)
             return None
+
+    async def _fix_user_history(self, event: AstrMessageEvent, request_key: str, bot_reply: str = None):
+        """
+        Bug 1.3: Manually add the user's prompt to the conversation history
+        to prevent disjointed context (assistant -> assistant). This is necessary
+        because the initial failed request did not save the user's prompt.
+        Also saves the bot's reply if provided.
+        """
+        try:
+            stored_params = self.pending_requests.get(request_key)
+            if not stored_params:
+                return
+
+            conv_mgr = self.context.conversation_manager
+            umo = event.unified_msg_origin
+            # Use stored conversation_id if available, otherwise get current
+            cid = stored_params.get("conversation_id")
+            if not cid:
+                cid = await conv_mgr.get_curr_conversation_id(umo)
+            
+            conv = await conv_mgr.get_conversation(umo, cid)
+            prompt = stored_params.get("prompt")
+
+            if conv and prompt:
+                # Manually modify and update the conversation history
+                history_list = json.loads(conv.history) if conv.history else []
+                
+                # Check if user prompt is already the last message to avoid duplication
+                if not history_list or history_list[-1].get("content") != prompt:
+                    history_list.append({"role": "user", "content": prompt})
+                    logger.debug(f"已为会话 {cid} 手动补全用户历史记录")
+                
+                # If bot reply is provided, append it as well
+                if bot_reply:
+                    history_list.append({"role": "assistant", "content": bot_reply})
+                    logger.debug(f"已为会话 {cid} 手动补全Bot回复历史记录")
+
+                await self.context.conversation_manager.update_conversation(
+                    unified_msg_origin=umo, conversation_id=cid, history=history_list
+                )
+        except Exception as e:
+            logger.error(f"手动补全历史记录时出错: {e}", exc_info=True)
 
     async def _execute_retry_sequence(
         self, event: AstrMessageEvent, request_key: str
@@ -465,6 +512,8 @@ class Main(Star):
 
                 if new_text and not has_error:
                     logger.info(f"第 {attempt} 次重试成功，生成有效回复")
+                    # Bug 1.3: 修复历史记录，同时保存Bot回复
+                    await self._fix_user_history(event, request_key, bot_reply=new_text)
                     # 确保重试结果被正确标记为LLM结果，以便TTS等插件能正确处理
                     result = MessageEventResult()
                     result.message(new_text)
@@ -586,6 +635,8 @@ class Main(Star):
                     # 使用锁确保线程安全
                     async with result_lock:
                         if first_valid_result is None:
+                            # Bug 1.3: 修复历史记录，同时保存Bot回复
+                            await self._fix_user_history(event, request_key, bot_reply=new_text)
                             first_valid_result = new_text
                             logger.info(f"并发重试任务 #{attempt_id} 获得首个有效结果")
                             return new_text
@@ -694,12 +745,15 @@ class Main(Star):
         # 发送兜底回复
         if self.fallback_reply and self.fallback_reply.strip():
             # 确保兜底回复也被标记为LLM结果
+            # Bug 3: 确保兜底回复能正确返回给用户，使用 PLAIN 类型可能更稳妥，或者确保 LLM_RESULT 被正确处理
+            # 这里我们保持 LLM_RESULT 但确保消息内容正确
             result = MessageEventResult()
             result.message(self.fallback_reply.strip())
             result.result_content_type = ResultContentType.LLM_RESULT
             event.set_result(result)
             logger.info("已发送兜底回复消息（标记为LLM结果）")
         else:
+            # 如果没有兜底回复，确保清除结果并停止事件，防止空回复
             event.clear_result()
             event.stop_event()
             logger.debug("未配置兜底回复，事件已终止")
@@ -779,17 +833,8 @@ class Main(Star):
             # 这是一个更纯净、更符合框架设计理念的做法。
             logger.info("LLM响应已通过重试更新，框架将使用新设置的结果。")
         else:
-            # 重试失败，发送兜底回复
-            if self.fallback_reply and self.fallback_reply.strip():
-                # 统一结果处理：创建新的 MessageEventResult 并调用 event.set_result()
-                result = MessageEventResult()
-                result.message(self.fallback_reply.strip())
-                result.result_content_type = ResultContentType.LLM_RESULT
-                event.set_result(result)
-                logger.info("重试失败，已通过 set_result 设置兜底回复")
-            else:
-                # 如果没有兜底回复，保持原样但记录日志
-                logger.warning("重试失败且未配置兜底回复")
+            # Bug 2: 逻辑归一, 调用通用失败处理函数
+            self._handle_retry_failure(event)
 
         # 清理存储的请求参数
         if request_key in self.pending_requests:
@@ -850,6 +895,7 @@ class Main(Star):
         if request_key in self.pending_requests:
             del self.pending_requests[request_key]
             logger.debug(f"结果装饰阶段已清理请求参数: {request_key}")
+
 
     async def _cleanup_concurrent_tasks(self, tasks):
         """安全清理并发任务，遵循AstrBot资源管理规范"""
