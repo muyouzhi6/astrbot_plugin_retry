@@ -181,6 +181,7 @@ class Main(Star):
             "unified_msg_origin": event.unified_msg_origin,
             # Bug 1.1: Store conversation_id instead of live object
             "conversation_id": getattr(req.conversation, "id", None) if hasattr(req, "conversation") else None,
+            "persona_id": getattr(req.conversation, "persona_id", None) if hasattr(req, "conversation") else None,
         }
         
         # 显式存储sender信息（第一处修改：存储阶段）
@@ -336,6 +337,7 @@ class Main(Star):
             system_prompt = stored_params.get("system_prompt")
             conversation_id = stored_params.get("conversation_id")
             unified_msg_origin = stored_params.get("unified_msg_origin")
+            persona_id = stored_params.get("persona_id")
 
             if system_prompt:
                 logger.debug("重试时优先使用初次请求存储的 system_prompt 快照")
@@ -347,13 +349,15 @@ class Main(Star):
                         conv_mgr = getattr(self.context, "conversation_manager", None)
                         if conv_mgr:
                             conversation = await conv_mgr.get_conversation(unified_msg_origin, conversation_id)
-                            if conversation and conversation.persona_id:
+                            target_persona_id = persona_id if persona_id else (conversation.persona_id if conversation else None)
+                            
+                            if target_persona_id:
                                 persona_mgr = getattr(self.context, "persona_manager", None)
                                 if persona_mgr:
-                                    persona = await persona_mgr.get_persona(conversation.persona_id)
+                                    persona = await persona_mgr.get_persona(target_persona_id)
                                     if persona and persona.system_prompt:
                                         system_prompt = persona.system_prompt
-                                        logger.debug(f"重试时成功从 Persona '{conversation.persona_id}' 实时加载 system_prompt 作为兜底")
+                                        logger.debug(f"重试时成功从 Persona '{target_persona_id}' 实时加载 system_prompt 作为兜底")
                     except Exception as e:
                         logger.warning(f"重试时实时加载 Persona 失败: {e}")
 
@@ -388,7 +392,7 @@ class Main(Star):
             logger.error(f"重试调用LLM时发生错误: {e}", exc_info=True)
             return None
 
-    async def _fix_user_history(self, event: AstrMessageEvent, request_key: str, bot_reply: str = None):
+    async def _fix_user_history(self, event: AstrMessageEvent, request_key: str, bot_reply: Optional[str] = None):
         """
         Bug 1.3: Manually add the user's prompt to the conversation history
         to prevent disjointed context (assistant -> assistant). This is necessary
