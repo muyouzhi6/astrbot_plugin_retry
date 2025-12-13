@@ -1,6 +1,7 @@
 name: intelligent_retry
 desc: 当LLM回复为空或包含特定错误关键词时，自动进行多次重试，使用原始请求参数确保完整重试。新增智能截断检测与并发重试功能，简化架构提升性能。
 author: 木有知 & 长安某 (优化增强版)
-version: 3.0.1
+version: 3.0.2
 repo: https://github.com/muyouzhi6/astrbot_plugin_retry
+
 
