@@ -170,13 +170,33 @@ class Main(Star):
             if isinstance(comp, Comp.Image) and hasattr(comp, "url") and comp.url
         ]
 
+        # 尝试获取 system_prompt，如果请求中为空，尝试从人格中获取
+        system_prompt = getattr(req, "system_prompt", "")
+        
+        # 优先尝试从 conversation 对象直接获取 system_prompt (新增兜底)
+        if not system_prompt and hasattr(req, "conversation") and req.conversation:
+            system_prompt = getattr(req.conversation, "system_prompt", "")
+
+        if not system_prompt and hasattr(req, "conversation") and req.conversation:
+            persona_id = req.conversation.persona_id
+            if persona_id:
+                persona_mgr = getattr(self.context, "persona_manager", None)
+                if persona_mgr:
+                    try:
+                        persona = await persona_mgr.get_persona(persona_id)
+                        if persona and persona.system_prompt:
+                            system_prompt = persona.system_prompt
+                            logger.debug(f"store_llm_request: 从人格 {persona_id} 补全 system_prompt")
+                    except Exception as e:
+                        logger.warning(f"store_llm_request: 尝试补全 system_prompt 失败: {e}")
+
         # 存储请求参数 - 注意：此时system_prompt已包含完整的人格信息
         stored_params = {
             "prompt": req.prompt,
             # 确认使用深拷贝，防止上下文在重试过程中被外部修改污染 (v2.9.9 加固)
             "contexts": copy.deepcopy(getattr(req, "contexts", [])),
             "image_urls": image_urls,
-            "system_prompt": getattr(req, "system_prompt", ""),
+            "system_prompt": system_prompt,
             "func_tool": getattr(req, "func_tool", None),
             "unified_msg_origin": event.unified_msg_origin,
             # Bug 1.1: Store conversation_id instead of live object
@@ -344,22 +364,36 @@ class Main(Star):
             else:
                 # 如果快照中没有，再尝试实时获取作为兜底
                 logger.debug("快照中无 system_prompt，尝试实时获取作为兜底")
-                if conversation_id and unified_msg_origin:
-                    try:
+                try:
+                    # 优先使用存储的 conversation_id 和 persona_id
+                    target_persona_id = persona_id
+                    
+                    # 如果没有存储的 persona_id，尝试从会话中获取
+                    if not target_persona_id and conversation_id and unified_msg_origin:
                         conv_mgr = getattr(self.context, "conversation_manager", None)
                         if conv_mgr:
                             conversation = await conv_mgr.get_conversation(unified_msg_origin, conversation_id)
-                            target_persona_id = persona_id if persona_id else (conversation.persona_id if conversation else None)
-                            
-                            if target_persona_id:
-                                persona_mgr = getattr(self.context, "persona_manager", None)
-                                if persona_mgr:
-                                    persona = await persona_mgr.get_persona(target_persona_id)
-                                    if persona and persona.system_prompt:
-                                        system_prompt = persona.system_prompt
-                                        logger.debug(f"重试时成功从 Persona '{target_persona_id}' 实时加载 system_prompt 作为兜底")
-                    except Exception as e:
-                        logger.warning(f"重试时实时加载 Persona 失败: {e}")
+                            if conversation:
+                                target_persona_id = conversation.persona_id
+
+                    # 如果仍然没有，尝试从当前会话获取（最后的兜底）
+                    if not target_persona_id and unified_msg_origin:
+                        conv_mgr = getattr(self.context, "conversation_manager", None)
+                        if conv_mgr:
+                            curr_cid = await conv_mgr.get_curr_conversation_id(unified_msg_origin)
+                            conversation = await conv_mgr.get_conversation(unified_msg_origin, curr_cid)
+                            if conversation:
+                                target_persona_id = conversation.persona_id
+
+                    if target_persona_id:
+                        persona_mgr = getattr(self.context, "persona_manager", None)
+                        if persona_mgr:
+                            persona = await persona_mgr.get_persona(target_persona_id)
+                            if persona and persona.system_prompt:
+                                system_prompt = persona.system_prompt
+                                logger.debug(f"重试时成功从 Persona '{target_persona_id}' 实时加载 system_prompt 作为兜底")
+                except Exception as e:
+                    logger.warning(f"重试时实时加载 Persona 失败: {e}")
 
             # 只有在最终获取到 system_prompt 时才添加到参数中
             if system_prompt:
@@ -367,9 +401,21 @@ class Main(Star):
             
             # === Bug 1.2: 上下文重建 ===
             # 重建 contexts 列表，将存储的 prompt 作为最后一个 user 角色的消息追加
-            contexts = stored_params.get("contexts", [])
-            if stored_params.get("prompt"):
-                contexts.append({"role": "user", "content": stored_params["prompt"]})
+            # 必须使用深拷贝，否则会污染 pending_requests 中的 stored_params，导致多次重试时 prompt 重复叠加
+            contexts = copy.deepcopy(stored_params.get("contexts", []))
+            prompt = stored_params.get("prompt")
+            
+            # 确保不重复添加 prompt (防止上下文中已包含的情况)
+            if prompt:
+                should_append = True
+                if contexts and isinstance(contexts[-1], dict):
+                    last_content = contexts[-1].get("content", "")
+                    if last_content == prompt:
+                        should_append = False
+                
+                if should_append:
+                    contexts.append({"role": "user", "content": prompt})
+            
             kwargs["contexts"] = contexts
             
             # === 恢复Provider特定参数 ===
