@@ -1,7 +1,9 @@
 name: intelligent_retry
-desc: 【注意：此插件已过时，请勿继续使用】当LLM回复为空或包含特定错误关键词时，自动进行多次重试，使用原始请求参数确保完整重试。新增智能截断检测与并发重试功能，简化架构提升性能。
+display_name: 【已弃用】Intelligent Retry
+short_desc: 此插件已不适配当前 AstrBot，请勿安装或继续使用。
+desc: 【已弃用，请勿安装】此插件已不适配当前 AstrBot，继续使用可能导致回复流程异常、人格/上下文丢失或与其他插件冲突。请卸载本插件，不要从插件市场继续安装。
 author: 木有知 & 长安某 (优化增强版)
-version: 3.0.2
+version: 3.0.3
 repo: https://github.com/muyouzhi6/astrbot_plugin_retry
-
+astrbot_version: <4.0.0
 

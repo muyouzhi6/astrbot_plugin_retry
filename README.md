@@ -1,11 +1,16 @@
-# AstrBot 智能重试插件 (Intelligent Retry)
+# 【已弃用，请勿安装】AstrBot 智能重试插件 (Intelligent Retry)
+
+> [!CAUTION]
+> 此插件已不适配当前 AstrBot，请不要再从插件市场或 GitHub 安装，也不要在现有实例中继续启用。
+> 继续使用可能导致回复流程异常、人格/上下文丢失，或与 TTS、事件钩子类插件产生冲突。
+> 如果你已经安装了本插件，请在 AstrBot WebUI 中卸载，并清理相关配置后重启 AstrBot。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/Version-2.9.8-blue)](https://github.com/muyouzhi6/astrbot_plugin_retry)
+[![Version](https://img.shields.io/badge/Version-3.0.3-red)](https://github.com/muyouzhi6/astrbot_plugin_retry)
 
-一个为 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 设计的高性能智能重试插件，专门解决大语言模型（LLM）交互中的不稳定问题。通过三层智能检测系统和并发重试机制，显著提升对话体验和响应速度。
+一个为旧版 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 设计的智能重试插件。此仓库仅保留历史代码和迁移提醒，不再建议作为当前 AstrBot 插件使用。
 
-**当前版本：v3.0.1** - 🔥 **重要修复**：人格丢失和TTS插件兼容性问题
+**当前版本：v3.0.3** - **弃用警告版本，仅用于阻止继续误装。**
 
 ## ✨ 核心特性
 
@@ -47,15 +52,22 @@
 
 ## 📦 安装方法
 
-### 方法一：AstrBot 插件市场（推荐）
-在 AstrBot 插件市场搜索 `intelligent_retry` 直接安装。
+### 不要从 AstrBot 插件市场安装
 
-### 方法二：手动安装
+请不要在 AstrBot 插件市场搜索或安装 `intelligent_retry`。如果插件市场仍显示此插件，请忽略该条目，等待市场索引刷新。
+
+### 不要手动安装
 ```bash
-cd /path/to/AstrBot/data/plugins
-git clone https://github.com/muyouzhi6/astrbot_plugin_retry.git
-# 重启 AstrBot 或在 WebUI 中重载插件
+# 不要执行:
+# cd /path/to/AstrBot/data/plugins
+# git clone https://github.com/muyouzhi6/astrbot_plugin_retry.git
 ```
+
+### 已安装用户
+
+1. 在 AstrBot WebUI 的插件管理中禁用并卸载 `intelligent_retry`。
+2. 删除残留插件目录和相关配置。
+3. 重启 AstrBot 后确认回复流程恢复正常。
 
 ## ⚙️ 配置选项
 
